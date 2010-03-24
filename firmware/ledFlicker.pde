@@ -341,9 +341,12 @@ void loop(){
 
 
 unsigned int SetupTimer1(){
-  // Set pwm clock divider for timer 1 (the 16-bit timer)
   // Reasonable settings for ps are 1 (for 15.625 KHz) or 8 (for 1.953 KHz).
   byte ps = 1;
+  const bool fastPwm = true;
+  const int topVal = 1023;
+  
+  // Set pwm clock divider for timer 1 (the 16-bit timer)
   // For CS12,CS11,CS10:
   // 000 is timer stopped
   // 001 is /1 prescaler
@@ -360,18 +363,30 @@ unsigned int SetupTimer1(){
     TCCR1B |= (1 << CS11); 
     TCCR1B &= ~(1 << CS10);
   }
-  // We're using fast PWM, so PWM_freq = FCPU/(N*(1+TOP))
-  // (For phase-correct PWM, PWM_freq = FCPU/(2*N*TOP).)
-  // FCPU = CPU freq = 16MHz, N = prescaler and TOP = counter top value (1023 for 10-bit)
-  unsigned int pwmFreq = (int)((float)FCPU/(ps*(1.0+1023.0))+0.5);
 
-  // For mode 3 (10-bit, phase-correct PWM), clear WGM12
-  // For mode 7 (10 bit, fast), set WGM12
-  // For flickeringLEDs, fast PWM is fine.
-  TCCR1B &= ~(1 << WGM13);
-  TCCR1B |=  (1 << WGM12);
-  TCCR1A |=  (1 << WGM11); 
-  TCCR1A |=  (1 << WGM10);
+  // for fast PWM, PWM_freq = FCPU/(N*(1+TOP))
+  // for phase-correct PWM, PWM_freq = FCPU/(2*N*TOP)
+  // FCPU = CPU freq = 16MHz, N = prescaler and TOP = counter top value (1023 for 10-bit)
+  unsigned int pwmFreq;
+  if(fastPwm)
+    pwmFreq = (int)((float)FCPU/(ps*(1.0+1023.0))+0.5);
+  else
+    pwmFreq = (int)((float)FCPU/(ps*2.0*topVal)+0.5);
+
+  if(fastPwm){
+    // mode 7 (10 bit, fast): 0,1,1,1
+    TCCR1B &= ~(1 << WGM13);
+    TCCR1B |=  (1 << WGM12);
+    TCCR1A |=  (1 << WGM11); 
+    TCCR1A |=  (1 << WGM10);
+  }else{
+    // mode 8 (phase & freq correct, topVal is ICR1): 1,0,0,0
+    TCCR1B |=  (1 << WGM13);
+    TCCR1B &=  ~(1 << WGM12);
+    TCCR1A &=  ~(1 << WGM11); 
+    TCCR1A &=  ~(1 << WGM10);
+    ICR1 = topVal;
+  }
 
   // Make sure all our pins are set for pwm
   pinMode(led1Pin, OUTPUT);
