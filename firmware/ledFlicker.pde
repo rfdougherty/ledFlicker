@@ -184,8 +184,15 @@ void messageReady() {
       else{
         stopISR();
         // setup the waveform. params are: channel, freq, amp, phase, mean
-        setupWave((byte)val[0], val[1], val[2], val[3], val[4]);
-        applyMeanLevel(val[0]);
+        if(val[0]>=0&&val[0]<NUM_CHANNELS){
+          setupWave((byte)val[0], val[1], val[2], val[3], val[4]);
+          applyMeanLevel((byte)val[0]);
+        }else{
+          for(i=0; i<NUM_CHANNELS; i++){
+            setupWave(i, val[1], val[2], val[3], val[4]);
+            applyMeanLevel(i);
+          }
+        }
       }
       break;
 
@@ -515,7 +522,7 @@ unsigned int getEnvelopeIndex(unsigned int curTics){
   // Must be careful of overflow. For interrupt freq of 2kHz, max duation is ~ 32 secs. For 4kHz it is ~16.
   // We could switch to long ints if needed.
 
-  if(curTics>g_envelopeStartEnd && curTics<g_envelopeEndStart){
+  if((curTics>g_envelopeStartEnd && curTics<g_envelopeEndStart) || g_envelopeDwell==0){
     envIndex = maxEnvelopeIndex;
   }
   else if(curTics<=g_envelopeStartEnd){
