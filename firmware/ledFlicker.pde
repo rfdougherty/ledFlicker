@@ -40,13 +40,8 @@
 // Serial port baud rate. 115.2 kbs seems to work fine. That's ~12 bytes/msec, 
 // which should keep latencies low for short (30-50 byte) commands. Data integrity
 // shouldn't be a problem since we are effectively communicating over USB. But, 
-// to ease cpu demand, we'll use 57.6 kbs.
+// just to be sure, we'll use 57.6 kbs.
 #define BAUD 57600
-
-#define shiftDataPin 8
-#define shiftLatchPin 7
-#define shiftEnablePin 6
-#define shiftClockPin 5
 
 // F_CPU and __AVR_ATmega1280__ are defined for us by the arduino environment
 
@@ -54,12 +49,20 @@
   #define led1Pin 11
   #define led2Pin 12
   #define led3Pin 13
+  #define shiftDataPin 8
+  #define shiftLatchPin 7
+  #define shiftEnablePin 6
+  #define shiftClockPin 5
   #define NUM_WAVE_SAMPLES 600
   #define NUM_ENV_SAMPLES 60
   #define NUM_CHANNELS 3
 #else
   #define led1Pin 9
   #define led2Pin 10
+  #define shiftDataPin 8
+  #define shiftLatchPin 7
+  #define shiftEnablePin 6
+  #define shiftClockPin 5
   #define NUM_WAVE_SAMPLES 100
   #define NUM_ENV_SAMPLES 30
   #define NUM_CHANNELS 2
@@ -122,6 +125,7 @@ unsigned int phase[NUM_CHANNELS];
 Messenger message = Messenger(',','[',']'); 
 
 // Instantiate LedShift object
+// This is only used in setCurrents, but we get a weird compiler error when we put it in there.
 LedShift shift = LedShift(shiftDataPin, shiftLatchPin, shiftEnablePin, shiftClockPin);
 
 // Create the Message callback function. This function is called whener a complete 
@@ -259,14 +263,7 @@ void messageReady() {
       if(val[0]<0||val[0]>127||val[1]<0||val[1]>127||val[2]<0||val[2]>127)
          Serial.println("LED current values must be >=0 and <=127.");
       else{
-        // We don't use the A6280's PWMs, so make sure PWM value is max:
-        shift.SendPacket(shift.BuildColorPacket(1023, 1023, 1023));
-        // Now set the current source values
-        shift.SendPacket(shift.BuildCommandPacket(val[0], val[1], val[2]));
-        Serial.println("Current command packet sent: "); 
-        Serial.print("   Red: "); Serial.print(val[0],0); Serial.print(" = "); Serial.print(0.5*val[0]+36.5,1); Serial.println("%");
-        Serial.print(" Green: "); Serial.print(val[1],0); Serial.print(" = "); Serial.print(0.5*val[1]+36.5,1); Serial.println("%");
-        Serial.print("  Blue: "); Serial.print(val[2],0); Serial.print(" = "); Serial.print(0.5*val[2]+36.5,1); Serial.println("%");
+        setCurrents((byte)val[0], (byte)val[1], (byte)val[2]);
       }
       break;
 
@@ -349,8 +346,15 @@ void setup(){
   Serial.print(g_interruptFreq); 
   Serial.print("; requested freq was: "); 
   Serial.println(INTERRUPT_FREQ);
+  
+  Serial.println("Configuring constant current source shift registers.");
+  // TO DO: get these from EEPROM!
+  byte rc = 64;
+  byte gc = 64;
+  byte bc = 64;
+  setCurrents(rc, gc, bc);
 
-  // Set defaults (no flicker, mean level = 0.5)
+  // Set defaults
   for(int i=0; i<NUM_CHANNELS; i++){
     setupWave(i, 2.0, 1.0, i/3.0, 0.5);
     applyMeanLevel(i);
@@ -659,4 +663,14 @@ ISR(TIMER2_COMPA_vect) {
   // and the g_envelope rise/fall time must be >0 tics.
 }
 
+void setCurrents(byte r, byte g, byte b){
+  shift.SetCurrents(r, g, b);
+  Serial.println("Current command packet sent: "); 
+  Serial.print("   Red: "); Serial.print(r,DEC); Serial.print(" = "); 
+  Serial.print(shift.GetCurrentPercent(r),1); Serial.println("%");
+  Serial.print(" Green: "); Serial.print(g,DEC); Serial.print(" = ");
+  Serial.print(shift.GetCurrentPercent(g),1); Serial.println("%");
+  Serial.print("  Blue: "); Serial.print(b,DEC); Serial.print(" = "); 
+  Serial.print(shift.GetCurrentPercent(b),1); Serial.println("%");
+}
 

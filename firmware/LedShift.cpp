@@ -58,7 +58,7 @@ long unsigned int LedShift::BuildColorPacket(unsigned int red, unsigned int gree
     dp.red   = red;
     dp.green = green;
     dp.blue  = blue;
-
+    // command bit stays 0: dp.command = 0;
     return dp.value;
 }
 
@@ -70,13 +70,13 @@ long unsigned int LedShift::BuildColorPacket(unsigned int red, unsigned int gree
 // clockMode lets you set the PWM frequency for the diodes (A6281 only). 
 // Refer to page 7 of the datasheet for more information.  
 //
-long unsigned int LedShift::BuildCommandPacket(unsigned int red, unsigned int green, unsigned int blue, unsigned char clockMode){
-    //Make a packet and initialize all of the bits to zero.
+long unsigned int LedShift::BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue, uint8_t clockMode){
+    // Make a packet and initialize all of the bits to zero.
     dataPacket dp = {value:0};
 
     dp.redCurrent   = red;
     dp.greenCurrent = green;
-    dp.blue  = blue;
+    dp.blueCurrent  = blue;
     dp.clockMode = clockMode;
     dp.command = 1;
 
@@ -84,33 +84,49 @@ long unsigned int LedShift::BuildCommandPacket(unsigned int red, unsigned int gr
 }
 
 // Same as above, but don't bother setting clock mode
-long unsigned int LedShift::BuildCommandPacket(unsigned int red, unsigned int green, unsigned int blue){
-  //Make a packet and initialize all of the bits to zero.
+long unsigned int LedShift::BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue){
+  // Make a packet and initialize all of the bits to zero.
   dataPacket dp = {value:0};
   
   dp.redCurrent   = red;
   dp.greenCurrent = green;
-  dp.blue  = blue;
+  dp.blueCurrent  = blue;
+  // clock mode stays at 0
   dp.command = 1;
   
   return dp.value;
 }
 
 void LedShift::SendPacket(long unsigned int dp){
-  // Loop over the 32 data bits
-  for(byte i = 1; i < 32 + 1; i++){
+  // Loop over the 31 data bits
+  for(int i = 1; i < 32 + 1; i++){
+    // Data is read on rising edge of the clock pin, so set clock low here
+    //*clockReg &= ~clockBit;
     // Set the appropriate Data In value according to the packet.
     if ((dp >> (32 - i)) & 1)
       *dataReg |= dataBit;
     else
       *dataReg &= ~dataBit;
-
-    // Toggle the clock bit twice.
+    // Now set the clock high to send data
+    //*clockReg |= clockBit;
+    // // Toggle the clock bit twice.
     *clockReg ^= clockBit;
     *clockReg ^= clockBit;
   }
-  *latchReg |= latchBit;
-  *latchReg &= ~latchBit;
+}
+
+void LedShift::SetCurrents(uint8_t red, uint8_t green, uint8_t blue){
+  // Set pwms to full-on:
+  SendPacket(BuildColorPacket(1023, 1023, 1023));
+  Latch();
+  // Now set the current source values
+  SendPacket(BuildCommandPacket(red, green, blue));
+  Latch();
+}
+
+float LedShift::GetCurrentPercent(uint8_t currentByte){
+  float currentPercent = 0.5*currentByte+36.5;
+  return(currentPercent);
 }
 
 void LedShift::Latch(){

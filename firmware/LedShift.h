@@ -26,13 +26,14 @@ typedef union dataPacket{
         unsigned :1;
         unsigned redCurrent:7;
         unsigned :3;
-        unsigned blueCurrent:7;        
+        unsigned blueCurrent:7;   
     };
     struct{
         unsigned green:10;
         unsigned red:10;
         unsigned blue:10;
         unsigned command:1;
+        // the 31st bit is the same for the two aliases: command
     };
 } dataPacket;
 
@@ -44,10 +45,13 @@ public:
   LedShift(uint8_t dataPin, uint8_t latchPin, uint8_t enablePin, uint8_t clockPin);
   
   long unsigned int BuildColorPacket(unsigned int red, unsigned int green, unsigned int blue);
-  long unsigned int BuildCommandPacket(unsigned int red, unsigned int green, unsigned int blue);
-  long unsigned int BuildCommandPacket(unsigned int red, unsigned int green, unsigned int blue, unsigned char clockMode);
+  long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue);
+  long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue, uint8_t clockMode);
   void SendPacket(long unsigned int dp);
   void Latch();
+  
+  void SetCurrents(uint8_t red, uint8_t green, uint8_t blue);
+  float GetCurrentPercent(uint8_t currentByte);
   
   
 private:
