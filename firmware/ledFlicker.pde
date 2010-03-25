@@ -71,7 +71,20 @@
 #define PI 3.14159265358979
 #define TWOPI 6.28318530717959
 
-#define INTERRUPT_FREQ 3000
+// The maxval determines the resolution of the PWM output. E.g.:
+// 255 for 8-bit, 511 for 9-bit, 1023 for 10-bit, 2047 for 11-bit, 4095 for 12 bit.
+// But remember that higher resolution means slower PWM frequency.
+#define PWM_MAXVAL 1023
+#define PWM_MIDVAL (PWM_MAXVAL/2.0)
+// Fast PWM goes twice as fast, but the pulses aren't as spectrally nice as
+// the non-fast ("phase and frequency correct") PWM mode. Also, 'zero' is
+// not really zero (there is a narrow spike that is visible onthe LEDs). All
+// the spectral ugliness is way beyond what we can see, so fast PWM is fine if
+// you don't need true zero. And, you can trade off some of the extra speed 
+// for better resolution (see PWM_MAXVAL).
+#define PWM_FAST_FLAG false
+
+#define INTERRUPT_FREQ 2000
 // The interrupt frequency is the rate at which the waveform samples will
 // play out. A higher frequency will give better fidelity for high frequency
 // wavforms. However, the maximum rate is limited by the complexity of the 
@@ -134,6 +147,8 @@ void messageReady() {
       Serial.println("");
       Serial.println("[?]");
       Serial.println("    help (displays this text).");
+      Serial.print("[o"); for(i=1; i<=NUM_CHANNELS; i++){ Serial.print(",val"); Serial.print(i); } Serial.println("]");
+      Serial.print("    set the raw PWM outputs (0 - "); Serial.print(PWM_MAXVAL); Serial.print(") for all channels.");      
       Serial.println("[e,duration,riseFall]");
       Serial.println("    set the envelope duration and rise/fall times (in seconds).");
       Serial.println("[w,channel,frequency,amplitude,(phase=0),(mean=0.5)]");
@@ -161,6 +176,17 @@ void messageReady() {
       Serial.println("For example:");
       Serial.println("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]");
       Serial.println("");
+      break;
+      
+    case 'o': // Set outputs
+      // get incoming data
+      while(message.available()) val[i++] = message.readFloat();
+      if(i<NUM_CHANNELS) Serial.println("set outputs requires one parameter for each channel.");
+      else{
+        stopISR();
+        for(i=0; i<NUM_CHANNELS; i++)
+          setOutput(i, (unsigned int)val[i]);
+      }
       break;
       
     case 'e': // Set envelope params
@@ -287,10 +313,14 @@ void messageReady() {
 
 void setup(){
   Serial.begin(BAUD);
-    Serial.print("ledFlicker firmware version "); Serial.println(VERSION);
-    Serial.println("Copyright 2009 Bob Dougherty <bobd@stanford.edu>"); 
-    Serial.println("For more info, see http://vistalab.stanford.edu/");
-
+  Serial.println("");
+  Serial.println("*********************************************************");
+  Serial.print(  "* ledFlicker firmware version "); Serial.println(VERSION);
+  Serial.println("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>"); 
+  Serial.println("* For more info, see http://vistalab.stanford.edu/");
+  Serial.println("*********************************************************");
+  Serial.println("");
+  
   // Compute the wave and envelope LUTs. We could precompute and store them in flash, but
   // they only take a a few 10's of ms to compute when we boot up and it simplifies the code.
   // However, they do cramp our use of RAM. If the RAM limit becomes a problem, we should store
@@ -299,7 +329,7 @@ void setup(){
   Serial.print("Computing wave LUT: ");
   unsigned long ms = millis();
   for(int i=0; i<NUM_WAVE_SAMPLES; i++)
-    g_sineWave[i] = sin(TWOPI*i/NUM_WAVE_SAMPLES)*511.5;
+    g_sineWave[i] = sin(TWOPI*i/NUM_WAVE_SAMPLES)*PWM_MIDVAL;
   for(int i=0; i<NUM_ENV_SAMPLES; i++)
     g_envelope[i] = 0.5 - cos(PI*i/(NUM_ENV_SAMPLES-1.0))/2.0;
   ms = millis()-ms;
@@ -308,11 +338,13 @@ void setup(){
   Serial.print(ms); 
   Serial.println(" miliseconds.");
 
-  Serial.println("Initializing 10-bit PWM on timer 1.");
-  unsigned int pwmFreq = SetupTimer1();
+  if(PWM_FAST_FLAG) Serial.println("Initializing fast PWM on timer 1.");
+  else              Serial.println("Initializing phase/frequency correct PWM on timer 1.");
+  unsigned int pwmFreq = SetupTimer1(PWM_MAXVAL, PWM_FAST_FLAG);
   Serial.print("PWM Freq: "); 
   Serial.print(pwmFreq); 
-  Serial.println(" Hz");
+  Serial.print(" Hz; Max PWM value: ");
+  Serial.println(PWM_MAXVAL);   
 
   Serial.println("Initializing waveform interrupt on timer 2.");
   g_interruptFreq = SetupTimer2(INTERRUPT_FREQ);
@@ -340,53 +372,32 @@ void loop(){
 }
 
 
-unsigned int SetupTimer1(){
-  // Reasonable settings for ps are 1 (for 15.625 KHz) or 8 (for 1.953 KHz).
-  byte ps = 1;
-  const bool fastPwm = true;
-  const int topVal = 1023;
-  
+unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
   // Set pwm clock divider for timer 1 (the 16-bit timer)
-  // For CS12,CS11,CS10:
-  // 000 is timer stopped
-  // 001 is /1 prescaler
-  // 010 is /8 prescaler
-  // 011 is /64 prescaler
-  if(ps == 1){
-    TCCR1B &= ~(1 << CS12); 
-    TCCR1B &= ~(1 << CS11); 
-    TCCR1B |= (1 << CS10);
-  }
-  else{
-    ps = 8;
-    TCCR1B &= ~(1 << CS12); 
-    TCCR1B |= (1 << CS11); 
-    TCCR1B &= ~(1 << CS10);
-  }
-
-  // for fast PWM, PWM_freq = FCPU/(N*(1+TOP))
-  // for phase-correct PWM, PWM_freq = FCPU/(2*N*TOP)
-  // FCPU = CPU freq = 16MHz, N = prescaler and TOP = counter top value (1023 for 10-bit)
-  unsigned int pwmFreq;
-  if(fastPwm)
-    pwmFreq = (int)((float)FCPU/(ps*(1.0+1023.0))+0.5);
-  else
-    pwmFreq = (int)((float)FCPU/(ps*2.0*topVal)+0.5);
+  // For CS12,CS11,CS10: 001 is /1 prescaler (010 is /8 prescaler)
+  TCCR1B &= ~(1 << CS12); 
+  TCCR1B &= ~(1 << CS11); 
+  TCCR1B |= (1 << CS10);
 
   if(fastPwm){
-    // mode 7 (10 bit, fast): 0,1,1,1
-    TCCR1B &= ~(1 << WGM13);
+    // mode 14 (fast, topVal is ICR1): 1,1,1,0
+    TCCR1B |=  (1 << WGM13);
     TCCR1B |=  (1 << WGM12);
     TCCR1A |=  (1 << WGM11); 
-    TCCR1A |=  (1 << WGM10);
+    TCCR1A &= ~(1 << WGM10);
   }else{
     // mode 8 (phase & freq correct, topVal is ICR1): 1,0,0,0
     TCCR1B |=  (1 << WGM13);
     TCCR1B &=  ~(1 << WGM12);
     TCCR1A &=  ~(1 << WGM11); 
     TCCR1A &=  ~(1 << WGM10);
-    ICR1 = topVal;
   }
+  // Now load the topVal into the register. We can only do this after setting the mode:
+  //   The ICRn Register can only be written when using a Waveform Generation mode that utilizes
+  //   the ICRn Register for defining the counter’s TOP value. In these cases the Waveform Genera-
+  //   tion mode (WGMn3:0) bits must be set before the TOP value can be written to the ICRn
+  //   Register. (from the ATmega1280 data sheet)
+  ICR1 = topVal;
 
   // Make sure all our pins are set for pwm
   pinMode(led1Pin, OUTPUT);
@@ -401,6 +412,15 @@ unsigned int SetupTimer1(){
   TCCR1A |= (1 << COM1C1); 
   TCCR1A &= ~(1 << COM1C0);  
 #endif
+
+  // for fast PWM, PWM_freq = FCPU/(N*(1+TOP))
+  // for phase-correct PWM, PWM_freq = FCPU/(2*N*TOP)
+  // FCPU = CPU freq, N = prescaler = 1 and TOP = counter top value 
+  unsigned int pwmFreq;
+  if(fastPwm)
+    pwmFreq = (unsigned int)((float)FCPU/(1.0+topVal)+0.5);
+  else
+    pwmFreq = (unsigned int)((float)FCPU/(2.0*topVal)+0.5);
 
   return(pwmFreq);
 }
@@ -495,23 +515,39 @@ void setupWave(byte chan, float freq, float amp, float ph, float mn){
   // Amplitude is 0-1
   amplitude[chan] = amp;
   // Mean is in relative 0-1. If it is not set to 0.5, then you will get clipped waveforms at high amplitude.
-  mean[chan] = mn*1023.0;
+  mean[chan] = mn*PWM_MAXVAL;
   // the incremetor determines the output freq.
   // Wew scale by NUM_WAVE_SAMPLES/g_interruptFreq to convert freq in Hz to the incremeter value.
   sineInc[chan] = freq*NUM_WAVE_SAMPLES/g_interruptFreq;
+}
+
+void setOutput(byte chan, unsigned int val){
+  // Set PWM output to the specified level
+  if(val>PWM_MAXVAL) val = PWM_MAXVAL;
+  switch(chan){
+  case 0: 
+    OCR1A = val; 
+    break;
+  case 1: 
+    OCR1B = val; 
+    break;
+  case 2: 
+    OCR1C = val; 
+    break;
+  }
 }
 
 void applyMeanLevel(byte chan){
   // Set PWM output to mean level
   switch(chan){
   case 0: 
-    OCR1A = (int)(mean[0]+0.5); 
+    OCR1A = (unsigned int)(mean[0]+0.5); 
     break;
   case 1: 
-    OCR1B = (int)(mean[1]+0.5); 
+    OCR1B = (unsigned int)(mean[1]+0.5); 
     break;
   case 2: 
-    OCR1C = (int)(mean[2]+0.5); 
+    OCR1C = (unsigned int)(mean[2]+0.5); 
     break;
   }
 }
@@ -561,7 +597,7 @@ unsigned int updateWave(byte chan, unsigned int curTics, unsigned int envIndex){
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
   val = (unsigned int)(g_envelope[envIndex]*amplitude[chan]*g_sineWave[sineIndex]+mean[chan]+0.5);
   if(val<0) val = 0;
-  else if(val>1023) val = 1023;
+  else if(val>PWM_MAXVAL) val = PWM_MAXVAL;
   return(val);
 }
 
