@@ -15,7 +15,7 @@
 
 #ifndef Messenger_h
 #define Messenger_h
-#define MESSENGERBUFFERSIZE 256
+#define MESSENGERBUFFERSIZE 128
 
 #include <inttypes.h>
 

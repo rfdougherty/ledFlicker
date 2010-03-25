@@ -43,14 +43,14 @@
 // to ease cpu demand, we'll use 57.6 kbs.
 #define BAUD 57600
 
-#define shiftDataPin 5
-#define shiftLatchPin 6
-#define shiftEnablePin 7
-#define shiftClockPin 8
+#define shiftDataPin 8
+#define shiftLatchPin 7
+#define shiftEnablePin 6
+#define shiftClockPin 5
 
-#define MEGA 1
+// F_CPU and __AVR_ATmega1280__ are defined for us by the arduino environment
 
-#ifdef MEGA
+#ifdef __AVR_ATmega1280__
   #define led1Pin 11
   #define led2Pin 12
   #define led3Pin 13
@@ -60,29 +60,10 @@
 #else
   #define led1Pin 9
   #define led2Pin 10
-  #define NUM_WAVE_SAMPLES 200
-  #define NUM_ENV_SAMPLES 40
+  #define NUM_WAVE_SAMPLES 100
+  #define NUM_ENV_SAMPLES 30
   #define NUM_CHANNELS 2
 #endif
-
-// Is there a way to get this from the arduino environment?
-#define FCPU 16000000.0
-
-#define PI 3.14159265358979
-#define TWOPI 6.28318530717959
-
-// The maxval determines the resolution of the PWM output. E.g.:
-// 255 for 8-bit, 511 for 9-bit, 1023 for 10-bit, 2047 for 11-bit, 4095 for 12 bit.
-// But remember that higher resolution means slower PWM frequency.
-#define PWM_MAXVAL 1023
-#define PWM_MIDVAL (PWM_MAXVAL/2.0)
-// Fast PWM goes twice as fast, but the pulses aren't as spectrally nice as
-// the non-fast ("phase and frequency correct") PWM mode. Also, 'zero' is
-// not really zero (there is a narrow spike that is visible onthe LEDs). All
-// the spectral ugliness is way beyond what we can see, so fast PWM is fine if
-// you don't need true zero. And, you can trade off some of the extra speed 
-// for better resolution (see PWM_MAXVAL).
-#define PWM_FAST_FLAG false
 
 #define INTERRUPT_FREQ 2000
 // The interrupt frequency is the rate at which the waveform samples will
@@ -101,6 +82,22 @@
 // error. E.g., INTERRUPT_FREQ might be 3000, but the actual frequency achieved
 // is 3003.4 Hz. All calculations should use this actual frequency.
 static float g_interruptFreq;
+
+#define PI 3.14159265358979
+#define TWOPI 6.28318530717959
+
+// The maxval determines the resolution of the PWM output. E.g.:
+// 255 for 8-bit, 511 for 9-bit, 1023 for 10-bit, 2047 for 11-bit, 4095 for 12 bit.
+// But remember that higher resolution means slower PWM frequency.
+#define PWM_MAXVAL 1023
+#define PWM_MIDVAL (PWM_MAXVAL/2.0)
+// Fast PWM goes twice as fast, but the pulses aren't as spectrally nice as
+// the non-fast ("phase and frequency correct") PWM mode. Also, 'zero' is
+// not really zero (there is a narrow spike that is visible onthe LEDs). All
+// the spectral ugliness is way beyond what we can see, so fast PWM is fine if
+// you don't need true zero. And, you can trade off some of the extra speed 
+// for better resolution (see PWM_MAXVAL).
+#define PWM_FAST_FLAG false
 
 // We need some globals because of the interrupt service routine (ISR) that
 // is used to play out the waveforms. ISRs can't take in parameters, but they
@@ -413,14 +410,14 @@ unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
   TCCR1A &= ~(1 << COM1C0);  
 #endif
 
-  // for fast PWM, PWM_freq = FCPU/(N*(1+TOP))
-  // for phase-correct PWM, PWM_freq = FCPU/(2*N*TOP)
-  // FCPU = CPU freq, N = prescaler = 1 and TOP = counter top value 
+  // for fast PWM, PWM_freq = F_CPU/(N*(1+TOP))
+  // for phase-correct PWM, PWM_freq = F_CPU/(2*N*TOP)
+  // F_CPU = CPU freq, N = prescaler = 1 and TOP = counter top value 
   unsigned int pwmFreq;
   if(fastPwm)
-    pwmFreq = (unsigned int)((float)FCPU/(1.0+topVal)+0.5);
+    pwmFreq = (unsigned int)((float)F_CPU/(1.0+topVal)+0.5);
   else
-    pwmFreq = (unsigned int)((float)FCPU/(2.0*topVal)+0.5);
+    pwmFreq = (unsigned int)((float)F_CPU/(2.0*topVal)+0.5);
 
   return(pwmFreq);
 }
@@ -448,8 +445,8 @@ float SetupTimer2(float freq){
   // We want to use the fastest interrupt (smallest prescaler) possible
   // to minimize quantization error and ensure the closest match between 
   // requested and acutal frequency.
-  // baseFreq is the slowest interrupt for a prescale of 1 (FCPU/(1*(1+255))).
-  float baseFreq = (float)FCPU/256.0;
+  // baseFreq is the slowest interrupt for a prescale of 1 (F_CPU/(1*(1+255))).
+  float baseFreq = (float)F_CPU/256.0;
   if(freq>=baseFreq){
     ps = 1;
     TCCR2B &= ~(1<<CS22); TCCR2B &= ~(1<<CS21); TCCR2B |=  (1<<CS20);
@@ -482,13 +479,13 @@ float SetupTimer2(float freq){
   TCCR2B &= ~(1<<WGM22);
 
   // Calculate the value that must be reloaded into the TOP register
-  //   interruptFreq = FCPU/(ps*(topVal+1))
-  //   topVal = FCPU/(interruptFreq*ps)-1
+  //   interruptFreq = F_CPU/(ps*(topVal+1))
+  //   topVal = F_CPU/(interruptFreq*ps)-1
   // We also need to add 0.5 for proper rounding, thus:
-  topVal = (unsigned int)((float)FCPU/(ps*freq)-0.5);
+  topVal = (unsigned int)((float)F_CPU/(ps*freq)-0.5);
   if(topVal>255) topVal = 255;
   // Now compute the exact frequency that we can achieve:
-  freq = (float)FCPU/(ps*(1.0+topVal));
+  freq = (float)F_CPU/(ps*(1.0+topVal));
 
   // Clear the counter
   TCNT2 = 0;
@@ -531,9 +528,11 @@ void setOutput(byte chan, unsigned int val){
   case 1: 
     OCR1B = val; 
     break;
+#ifdef __AVR_ATmega1280__
   case 2: 
     OCR1C = val; 
     break;
+#endif
   }
 }
 
@@ -546,9 +545,11 @@ void applyMeanLevel(byte chan){
   case 1: 
     OCR1B = (unsigned int)(mean[1]+0.5); 
     break;
+#ifdef __AVR_ATmega1280__
   case 2: 
     OCR1C = (unsigned int)(mean[2]+0.5); 
     break;
+#endif
   }
 }
 
