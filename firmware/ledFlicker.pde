@@ -29,8 +29,13 @@
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
+// Flash library is available from http://arduiniana.org/libraries/Flash/
+// We make extensive use of this so that we can be verbose in our messages
+// without using up precious RAM. (Using Flash saved us over 2Kb of RAM!)
+#include <Flash.h>
 #include "Messenger.h"
 #include "LedShift.h"
+
 
 // atmega 168  has  16k flash, 512 EEPROM, 1k RAM
 // atmega 328  has  32k flash,  1k EEPROM, 2k RAM
@@ -140,49 +145,45 @@ void messageReady() {
     switch(command) {
     
     case '?': // display help text
-      Serial.println("All ledFlicker commands must be enclosed in square brackets ([]); all characters");
-      Serial.println("outside of the brackets are ignored. Each command begins with a single letter");
-      Serial.println("(defined below), followed by some parameters. Parameters are separated by a comma.");
-      Serial.println("");
-      Serial.println("Commands (optional params are enclosed in parens with default value):");
-      Serial.println("");
-      Serial.println("[?]");
-      Serial.println("    help (displays this text).");
-      Serial.print("[o"); for(i=1; i<=NUM_CHANNELS; i++){ Serial.print(",val"); Serial.print(i); } Serial.println("]");
-      Serial.print("    set the raw PWM outputs (0 - "); Serial.print(PWM_MAXVAL); Serial.print(") for all channels.");      
-      Serial.println("[e,duration,riseFall]");
-      Serial.println("    set the envelope duration and rise/fall times (in seconds).");
-      Serial.println("[w,channel,frequency,amplitude,(phase=0),(mean=0.5)]");
-      Serial.println("    set waveform params for the specified channel.");
-      Serial.println("[p]");
-      Serial.println("    play the waveforms.");
-      Serial.println("[h]");
-      Serial.println("    halt waveform playout.");
-      Serial.println("[s]");
-      Serial.println("    status. Returns the time remaining for current playout (0 if no playout).");
-      Serial.println("[i]");
-      Serial.println("    set the interrupt frequency that controls waveform sample rate (100 - 5000).");
-      Serial.println("    A higher frequency will give better fidelity for high frequency wavforms. However, the maximum");
-      Serial.println("    rate is limited by the complexity of the waveform code. If you set this value too high, the CPU");
-      Serial.println("    spends all its time servicing the interrupt, effectively locking it up. ");
-      Serial.println("[c,chan1MaxValue,chan2MaxValue,chan3MaxValue]");
-      Serial.println("    set the maximum current output for three channels. This assumes that you have an");
-      Serial.println("    Allegro A6280 constant current source driving the LEDs and that it is connected top pins");
-      Serial.println("    5 (data, SDI), 6 (latch, LI), 7 (enable, OEI), and 8 (clock, CI)."); 
-      Serial.println("[v,channel]");
-      Serial.println("    validate the specified waveform. Prints some intenral variables and waveform stats.");
-      Serial.println("[d,channel]");
-      Serial.println("    dump the specified wavform. (Dumps a lot of data to your serial port!");
-      Serial.println("");
-      Serial.println("For example:");
-      Serial.println("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]");
-      Serial.println("");
+      Serial << F("All ledFlicker commands must be enclosed in square brackets ([]); all characters\n");
+      Serial << F("outside of the brackets are ignored. Each command begins with a single letter\n");
+      Serial << F("(defined below), followed by some parameters. Parameters are separated by a comma.\n\n");
+      Serial << F("Commands (optional params are enclosed in parens with default value):\n\n");
+      Serial << F("[?]\n");
+      Serial << F("    help (displays this text).\n");
+      Serial << F("[o"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",val") << i; } Serial << F("]\n");
+      Serial << F("    set the raw PWM outputs (0 - ") << PWM_MAXVAL << F(") for all channels.\n");
+      Serial << F("[e,duration,riseFall]\n");
+      Serial << F("    set the envelope duration and rise/fall times (in seconds).\n");
+      Serial << F("[w,channel,frequency,amplitude,(phase=0),(mean=0.5)]\n");
+      Serial << F("    set waveform params for the specified channel.\n");
+      Serial << F("[p]\n");
+      Serial << F("    play the waveforms.\n");
+      Serial << F("[h]\n");
+      Serial << F("    halt waveform playout.\n");
+      Serial << F("[s]\n");
+      Serial << F("    status. Returns the time remaining for current playout (0 if no playout).\n");
+      Serial << F("[i]\n");
+      Serial << F("    set the interrupt frequency that controls waveform sample rate (100 - 5000).\n");
+      Serial << F("    A higher frequency will give better fidelity for high frequency wavforms. However, the maximum\n");
+      Serial << F("    rate is limited by the complexity of the waveform code. If you set this value too high, the CPU\n");
+      Serial << F("    spends all its time servicing the interrupt, effectively locking it up. \n");
+      Serial << F("[c,chan1MaxValue,chan2MaxValue,chan3MaxValue]\n");
+      Serial << F("    set the maximum current output for three channels. This assumes that you have an\n");
+      Serial << F("    Allegro A6280 constant current source driving the LEDs and that it is connected top pins\n");
+      Serial << F("    5 (data, SDI), 6 (latch, LI), 7 (enable, OEI), and 8 (clock, CI).\n"); 
+      Serial << F("[v,channel]\n");
+      Serial << F("    validate the specified waveform. Prints some intenral variables and waveform stats.\n");
+      Serial << F("[d,channel]\n");
+      Serial << F("    dump the specified wavform. (Dumps a lot of data to your serial port!\n\n");
+      Serial << F("For example:\n");
+      Serial << F("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]\n\n");
       break;
       
     case 'o': // Set outputs
       // get incoming data
       while(message.available()) val[i++] = message.readFloat();
-      if(i<NUM_CHANNELS) Serial.println("set outputs requires one parameter for each channel.");
+      if(i<NUM_CHANNELS) Serial << F("set outputs requires one parameter for each channel.\n");
       else{
         stopISR();
         for(i=0; i<NUM_CHANNELS; i++)
@@ -193,11 +194,11 @@ void messageReady() {
     case 'e': // Set envelope params
       // get incoming data
       while(message.available()) val[i++] = message.readFloat();
-      if(i<2) Serial.println("envelope setup requires 2 parameters.");
+      if(i<2) Serial << F("ERROR: envelope setup requires 2 parameters.\n");
       else{
         stopISR();
         float dur = setupEnvelope(val[0], val[1]);
-        Serial.print("Envelope configured; actual duration is ");Serial.print(dur);Serial.println(" seconds.");
+        Serial << F("Envelope configured; actual duration is ") << dur << F(" seconds.\n");
       }
       break;
 
@@ -206,7 +207,7 @@ void messageReady() {
       val[4] = 0.5; // default mean
       while(message.available()) val[i++] = message.readFloat();
       if(i<3){ // channel, freq and amplitude are mandatory
-        Serial.println("waveform setup requires at least 3 parameters.");
+        Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
       }
       else{
         stopISR();
@@ -243,25 +244,22 @@ void messageReady() {
         stopISR();
         val[0] = message.readInt();
         if(val[0]<100||val[0]>6000)
-          Serial.println("ERROR: interrupt frequency must be >=100 and <=6000.");
+          Serial << F("ERROR: interrupt frequency must be >=100 and <=6000.\n");
         else{
             g_interruptFreq = SetupTimer2((int)val[0]);
-            Serial.print("Interrupt Freq: "); 
-            Serial.print(g_interruptFreq); 
-            Serial.print("; requested freq was: "); 
-            Serial.println((int)val[0]);
+            Serial << F("Interrupt Freq: ") << g_interruptFreq << F("; requested freq was: ") << (int)val[0] << F("\n");
         }
       }
-      else Serial.println("ERROR: interrupt frequency command requires a frequency parameter.");
+      else Serial << F("ERROR: interrupt frequency command requires a frequency parameter.\n");
       break;
 
     case 'c': // Set LED max currents on A6280 constant current source chip
       // get incoming data
       while(message.available()) val[i++] = message.readInt();
       if(i<3)
-        Serial.println("LED current requires 3 parameters.");
+        Serial << F("LED current requires 3 parameters.\n");
       if(val[0]<0||val[0]>127||val[1]<0||val[1]>127||val[2]<0||val[2]>127)
-         Serial.println("LED current values must be >=0 and <=127.");
+         Serial << F("LED current values must be >=0 and <=127.\n");
       else{
         setCurrents((byte)val[0], (byte)val[1], (byte)val[2]);
       }
@@ -271,21 +269,15 @@ void messageReady() {
       if(message.available()){
         val[0] = message.readInt();
         stopISR();
-        Serial.print("amplitude: "); 
-        Serial.println(amplitude[(unsigned int)val[0]]);
-        Serial.print("mean: "); 
-        Serial.println(mean[(unsigned int)val[0]]);
-        Serial.print("sineInc: "); 
-        Serial.println(sineInc[(unsigned int)val[0]]);
-        Serial.print("envTicsDuration: "); 
-        Serial.println(g_envelopeTicsDuration);
-        Serial.print("envelopeStartEnd: "); 
-        Serial.println(g_envelopeStartEnd);
-        Serial.print("envelopeEndStart: "); 
-        Serial.println(g_envelopeEndStart);
+        Serial << F("amplitude: ") << amplitude[(unsigned int)val[0]] << F("\n");
+        Serial << F("mean: ") << mean[(unsigned int)val[0]] << F("\n");
+        Serial << F("sineInc: ") << sineInc[(unsigned int)val[0]] << F("\n");
+        Serial << F("envTicsDuration: ") << g_envelopeTicsDuration << F("\n");
+        Serial << F("envelopeStartEnd: ")<< g_envelopeStartEnd << F("\n");
+        Serial << F("envelopeEndStart: ") << g_envelopeEndStart << F("\n");
         validateWave(val[0]);
       }
-      else Serial.println("ERROR: validate command requires a channel parameter.");
+      else Serial << F("ERROR: validate command requires a channel parameter.\n");
       break;
 
     case 'd':
@@ -294,12 +286,11 @@ void messageReady() {
         val[0] = message.readInt();
         dumpWave((byte)val[0]);
       }
-      else Serial.println("ERROR: dump command requires a channel parameter.");
+      else Serial << F("ERROR: dump command requires a channel parameter.\n");
       break;
 
     default:
-      Serial.print("Unknown command: ");
-      Serial.println(command);
+      Serial << F("Unknown command: ") << command << F("\n");
 
     } // end switch
   } // end while
@@ -307,47 +298,36 @@ void messageReady() {
 
 void setup(){
   Serial.begin(BAUD);
-  Serial.println("");
-  Serial.println("*********************************************************");
-  Serial.print(  "* ledFlicker firmware version "); Serial.println(VERSION);
-  Serial.println("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>"); 
-  Serial.println("* For more info, see http://vistalab.stanford.edu/");
-  Serial.println("*********************************************************");
-  Serial.println("");
+  Serial << F("*********************************************************\n");
+  Serial << F(  "* ledFlicker firmware version ") << VERSION << F("\n");
+  Serial << F("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>\n"); 
+  Serial << F("* For more info, see http://vistalab.stanford.edu/\n");
+  Serial << F("*********************************************************\n\n");
   
   // Compute the wave and envelope LUTs. We could precompute and store them in flash, but
   // they only take a a few 10's of ms to compute when we boot up and it simplifies the code.
   // However, they do cramp our use of RAM. If the RAM limit becomes a problem, we should store
   // them in flash and use PROGMEM to force the compiler to read directly from flash and not 
   // load them into RAM.
-  Serial.print("Computing wave LUT: ");
+  Serial << F("Computing wave LUT: \n");
   unsigned long ms = millis();
   for(int i=0; i<NUM_WAVE_SAMPLES; i++)
     g_sineWave[i] = sin(TWOPI*i/NUM_WAVE_SAMPLES)*PWM_MIDVAL;
   for(int i=0; i<NUM_ENV_SAMPLES; i++)
     g_envelope[i] = 0.5 - cos(PI*i/(NUM_ENV_SAMPLES-1.0))/2.0;
   ms = millis()-ms;
-  Serial.print(NUM_WAVE_SAMPLES); 
-  Serial.print(" samples in "); 
-  Serial.print(ms); 
-  Serial.println(" miliseconds.");
+  Serial << NUM_WAVE_SAMPLES << F(" samples in ") << ms << F(" miliseconds.");
 
-  if(PWM_FAST_FLAG) Serial.println("Initializing fast PWM on timer 1.");
-  else              Serial.println("Initializing phase/frequency correct PWM on timer 1.");
+  if(PWM_FAST_FLAG) Serial << F("Initializing fast PWM on timer 1.\n");
+  else              Serial << F("Initializing phase/frequency correct PWM on timer 1.\n");
   unsigned int pwmFreq = SetupTimer1(PWM_MAXVAL, PWM_FAST_FLAG);
-  Serial.print("PWM Freq: "); 
-  Serial.print(pwmFreq); 
-  Serial.print(" Hz; Max PWM value: ");
-  Serial.println(PWM_MAXVAL);   
+  Serial << F("PWM Freq: ") << pwmFreq << F(" Hz; Max PWM value: ") << PWM_MAXVAL << F("\n");   
 
-  Serial.println("Initializing waveform interrupt on timer 2.");
+  Serial << F("Initializing waveform interrupt on timer 2.\n");
   g_interruptFreq = SetupTimer2(INTERRUPT_FREQ);
-  Serial.print("Interrupt Freq: "); 
-  Serial.print(g_interruptFreq); 
-  Serial.print("; requested freq was: "); 
-  Serial.println(INTERRUPT_FREQ);
+  Serial << F("Interrupt Freq: ") << g_interruptFreq << F("; requested freq was: ") << INTERRUPT_FREQ << F("\n");
   
-  Serial.println("Configuring constant current source shift registers.");
+  Serial << F("Configuring constant current source shift registers.\n");
   // TO DO: get these from EEPROM!
   byte rc = 64;
   byte gc = 64;
@@ -355,16 +335,18 @@ void setup(){
   setCurrents(rc, gc, bc);
 
   // Set defaults
+  Serial << F("Setting defualt waveform.\n");
   for(int i=0; i<NUM_CHANNELS; i++){
     setupWave(i, 2.0, 1.0, i/3.0, 0.5);
     applyMeanLevel(i);
   }
   setupEnvelope(3.0, 0.3);
 
-  Serial.println("ledFlicker Ready.");
-
   // Attach the callback function to the Messenger
   message.attach(messageReady);
+  
+  Serial << F("ledFlicker Ready.\n");
+  Serial << F("freeMemory() reports ") << message.FreeMemory() << F(" bytes free.\n\n");
 }
 
 void loop(){
@@ -618,25 +600,17 @@ void validateWave(byte chan){
     if(val<minVal) minVal = val;
     mnVal += (float)val/g_envelopeTicsDuration;
   }
-  Serial.print("Wave "); 
-  Serial.print(chan); 
-  Serial.print(" [max,min,mean]: "); 
-  Serial.print(maxVal); 
-  Serial.print(", "); 
-  Serial.print(minVal); 
-  Serial.print(", "); 
-  Serial.println((int)(mnVal+0.5));
+  Serial << F("Wave #") << chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
 }
 
 void dumpWave(byte chan){
   unsigned int val;
-  Serial.print("wave=[");
+  Serial << F("wave=[");
   for(int i=0; i<g_envelopeTicsDuration; i++){
     val = updateWave(chan, i, getEnvelopeIndex(i));
-    Serial.print(val);
-    Serial.print(",");
+    Serial << val << F(",");
   }
-  Serial.println("];");
+  Serial << F("];\n");
 }
 
 // Timer2 CTC interrupt vector handler
@@ -664,13 +638,25 @@ ISR(TIMER2_COMPA_vect) {
 }
 
 void setCurrents(byte r, byte g, byte b){
-  shift.SetCurrents(r, g, b);
-  Serial.println("Current command packet sent: "); 
-  Serial.print("   Red: "); Serial.print(r,DEC); Serial.print(" = "); 
-  Serial.print(shift.GetCurrentPercent(r),1); Serial.println("%");
-  Serial.print(" Green: "); Serial.print(g,DEC); Serial.print(" = ");
-  Serial.print(shift.GetCurrentPercent(g),1); Serial.println("%");
-  Serial.print("  Blue: "); Serial.print(b,DEC); Serial.print(" = "); 
-  Serial.print(shift.GetCurrentPercent(b),1); Serial.println("%");
+  long unsigned int p;
+  
+  // Not sure why I have to do this many times for it to 'take'.
+  p = shift.BuildColorPacket(1023, 1023, 1023);
+  for(int i=0; i<100; i++){
+    shift.SendPacket(p);
+    shift.Latch();
+  }
+  //Serial << F("Sent color packet: ") << p << F("\n");
+    
+  p = shift.BuildCommandPacket(r, g, b);
+  shift.SendPacket(p);
+  shift.Latch();
+  //Serial << F("Sent command packet: ") << p << F("\n");
+  //shift.SetCurrents(r, g, b);
+  Serial << F("Current command packet sent: \n"); 
+  Serial << F("   Red: ") << (int)r << F(" = ") << shift.GetCurrentPercent(r) << F("%\n");
+  Serial << F(" Green: ") << (int)g << F(" = ") << shift.GetCurrentPercent(g) << F("%\n");
+  Serial << F("  Blue: ") << (int)b << F(" = ") << shift.GetCurrentPercent(b) << F("%\n");
+  
 }
 

@@ -40,6 +40,8 @@ public:
   uint8_t process(int serialByte);
   uint8_t available();
   void attach(messengerCallbackFunction newFunction);
+  // Reports the number of free bytes of RAM
+  unsigned int FreeMemory();
   
 private:
   void init(char separator, char prefix, char suffix);  // termChar option added by Bob Dougherty
