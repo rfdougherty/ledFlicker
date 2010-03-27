@@ -29,21 +29,20 @@ LedShift::LedShift(uint8_t dataPin, uint8_t latchPin, uint8_t enablePin, uint8_t
   pinMode(latchPin, OUTPUT);
   pinMode(enablePin, OUTPUT);
   pinMode(clockPin, OUTPUT);
-
-  // Initialize pin states
-  digitalWrite(latchPin, LOW);
-  // Setting enablepin high will turn off all the LEDs
-  digitalWrite(enablePin, LOW);
   
   // Precompute the clock and data register/bitmasks to speed up the ISR
   dataReg =  portOutputRegister(digitalPinToPort(dataPin));
   dataBit = digitalPinToBitMask(dataPin);
   latchReg =  portOutputRegister(digitalPinToPort(latchPin));
   latchBit = digitalPinToBitMask(latchPin);
-  enableReg = portOutputRegister(digitalPinToPort(clockPin));
-  enableBit = digitalPinToBitMask(clockPin);
+  enableReg = portOutputRegister(digitalPinToPort(enablePin));
+  enableBit = digitalPinToBitMask(enablePin);
   clockReg = portOutputRegister(digitalPinToPort(clockPin));
   clockBit = digitalPinToBitMask(clockPin);
+  
+  // Initialize pin states
+  Latch();
+  Enable();
 }
 
 
@@ -134,3 +133,10 @@ void LedShift::Latch(){
    *latchReg &= ~latchBit;
 }
 
+void LedShift::Enable(){
+   *enableReg &= ~enableBit;
+}
+
+void LedShift::Disable(){
+   *enableReg |= enableBit;
+}

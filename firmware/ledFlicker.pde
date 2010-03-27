@@ -25,7 +25,7 @@
  *
  */
 
-#define VERSION "0.1"
+#define VERSION "0.2"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -68,23 +68,20 @@
   #define shiftLatchPin 7
   #define shiftEnablePin 6
   #define shiftClockPin 5
-  #define NUM_WAVE_SAMPLES 100
+  #define NUM_WAVE_SAMPLES 200
   #define NUM_ENV_SAMPLES 30
   #define NUM_CHANNELS 2
 #endif
 
-#define INTERRUPT_FREQ 2000
+#define INTERRUPT_FREQ 3000
 // The interrupt frequency is the rate at which the waveform samples will
 // play out. A higher frequency will give better fidelity for high frequency
 // wavforms. However, the maximum rate is limited by the complexity of the 
 // ISR (interrupt function) that is run. If you set the INTERRUPT_FREQ too high, 
 // the CPU will spend all its time servicing the interrupt, effectively locking 
-// it up. For the current 3-channel ISR, we can easily go at 4kHz. While 6kHz
+// it up. For the current 3-channel ISR, we can easily go at 1kHz. While 2kHz
 // works, the serial port stops responding, so we can't process commands while 
-// playing a wavform.  If we tighten up the ISR code, we could go faster. 
-// Especially helpful would be reducing the amout of floating point math by 
-// precomputing as much as possible when we set up a waveform so that the ISR 
-// just needs to do integer math to play out the waveforms.
+// playing a wavform.  If we tighten up the ISR code, we could go faster.
 
 // g_interruptFreq is the same as the INTERRUPT_FREQ, except for qunatization
 // error. E.g., INTERRUPT_FREQ might be 3000, but the actual frequency achieved
@@ -236,7 +233,8 @@ void messageReady() {
       break;
 
     case 's': // return playout status
-      Serial.println(((float)g_envelopeTicsDuration-g_envelopeTics)/g_interruptFreq);
+      Serial.println(((float)g_envelopeTicsDuration-g_envelopeTics)/g_interruptFreq,3
+      );
       break;
       
     case 'i': // set interrupt frequency
@@ -335,12 +333,12 @@ void setup(){
   setCurrents(rc, gc, bc);
 
   // Set defaults
-  Serial << F("Setting defualt waveform.\n");
+  Serial << F("Setting default waveform.\n");
   for(int i=0; i<NUM_CHANNELS; i++){
     setupWave(i, 2.0, 1.0, i/3.0, 0.5);
     applyMeanLevel(i);
   }
-  setupEnvelope(3.0, 0.3);
+  setupEnvelope(3.0, 0.2);
 
   // Attach the callback function to the Messenger
   message.attach(messageReady);
@@ -453,14 +451,14 @@ float SetupTimer2(float freq){
     TCCR2B |=  (1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B &= ~(1<<CS20);
   }else{
     ps = 1024;
-    TCCR2B |=  (1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B |= (1<<CS20);
+    TCCR2B |=  (1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B |=  (1<<CS20);
   }
 
   // Set up timer for CTC mode. It will fire our interrupt every time it reaches 'TOP'.
   // We just need to set the prescaler and the TOP value to achieve the desired freq.
   TCCR2A &= ~(1<<COM2A1) & ~(1<<COM2A0);         // Disconnect OC2A.
   TCCR2A &= ~(1<<COM2B1) & ~(1<<COM2B0);         // Disconnect OC2B.
-  TCCR2B &= ~(1<<WGM20);  // Mode 2 - CTC (WGM2,1,0 = 0,1,0; WGM22 is in TCCR2B)
+  TCCR2A &= ~(1<<WGM20);  // Mode 2 - CTC (WGM2,1,0 = 0,1,0; WGM22 is in TCCR2B)
   TCCR2A |=  (1<<WGM21);
   TCCR2B &= ~(1<<WGM22);
 
@@ -618,6 +616,7 @@ void dumpWave(byte chan){
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
 ISR(TIMER2_COMPA_vect) {
+  // shift.Enable(); // We can use the enable pin to test ISR timing
   unsigned int envInd = getEnvelopeIndex(g_envelopeTics);
   OCR1A = updateWave(0, g_envelopeTics, envInd);
   OCR1B = updateWave(1, g_envelopeTics, envInd);
@@ -630,11 +629,11 @@ ISR(TIMER2_COMPA_vect) {
   }else{
     g_envelopeTics++;
   }
-
   // Note: there is no assurance that the PWMs will get set to their mean values
-  // when the waveform play-out finishes. Thus, the g_envelope must be designed to
-  // provide this assurance. That is, the g_envelope must have 0 as it's first value
-  // and the g_envelope rise/fall time must be >0 tics.
+  // when the waveform play-out finishes. Thus, g_envelope must be designed to
+  // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
+  
+ // shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
 void setCurrents(byte r, byte g, byte b){

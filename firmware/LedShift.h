@@ -49,6 +49,8 @@ public:
   long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue, uint8_t clockMode);
   void SendPacket(long unsigned int dp);
   void Latch();
+  void Enable();
+  void Disable();
   
   void SetCurrents(uint8_t red, uint8_t green, uint8_t blue);
   float GetCurrentPercent(uint8_t currentByte);
