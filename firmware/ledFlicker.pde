@@ -82,6 +82,7 @@
 // it up. For the current 3-channel ISR, we can easily go at 1kHz. While 2kHz
 // works, the serial port stops responding, so we can't process commands while 
 // playing a wavform.  If we tighten up the ISR code, we could go faster.
+// See http://www.embedded.com/columns/15201575?_requestid=291362
 
 // g_interruptFreq is the same as the INTERRUPT_FREQ, except for qunatization
 // error. E.g., INTERRUPT_FREQ might be 3000, but the actual frequency achieved
@@ -616,7 +617,7 @@ void dumpWave(byte chan){
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
 ISR(TIMER2_COMPA_vect) {
-  // shift.Enable(); // We can use the enable pin to test ISR timing
+  shift.Enable(); // We can use the enable pin to test ISR timing
   unsigned int envInd = getEnvelopeIndex(g_envelopeTics);
   OCR1A = updateWave(0, g_envelopeTics, envInd);
   OCR1B = updateWave(1, g_envelopeTics, envInd);
@@ -633,7 +634,7 @@ ISR(TIMER2_COMPA_vect) {
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
   
- // shift.Disable(); // We can use the enable pin to test ISR timing
+  shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
 void setCurrents(byte r, byte g, byte b){
