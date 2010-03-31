@@ -83,6 +83,9 @@
 // works, the serial port stops responding, so we can't process commands while 
 // playing a wavform.  If we tighten up the ISR code, we could go faster.
 // See http://www.embedded.com/columns/15201575?_requestid=291362
+// http://www.cs.uiowa.edu/~jones/bcd/divide.html#fixed
+// http://www.piclist.com/techref/method/math/fixed.htm
+
 
 // g_interruptFreq is the same as the INTERRUPT_FREQ, except for qunatization
 // error. E.g., INTERRUPT_FREQ might be 3000, but the actual frequency achieved
