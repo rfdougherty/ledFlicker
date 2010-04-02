@@ -54,13 +54,16 @@
   #define led1Pin 11
   #define led2Pin 12
   #define led3Pin 13
+  #define led4Pin 2
+  #define led5Pin 3
+  #define led6Pin 5
   #define shiftDataPin 8
   #define shiftLatchPin 7
   #define shiftEnablePin 6
   #define shiftClockPin 5
   #define NUM_WAVE_SAMPLES 600
   #define NUM_ENV_SAMPLES 60
-  #define NUM_CHANNELS 3
+  #define NUM_CHANNELS 6
 #else
   #define led1Pin 9
   #define led2Pin 10
@@ -389,13 +392,38 @@ unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
   pinMode(led2Pin, OUTPUT);
   TCCR1A |= (1 << COM1A1); 
   TCCR1A &= ~(1 << COM1A0); 
-  TCCR1A |= (1 << COM1B1); 
+  TCCR1A |=  (1 << COM1B1); 
   TCCR1A &= ~(1 << COM1B0);   
 #if NUM_CHANNELS > 2
-  // For arduino mega, we can use a third output
+  // For arduino mega, we can use 4 more outputs
   pinMode(led3Pin, OUTPUT);
-  TCCR1A |= (1 << COM1C1); 
-  TCCR1A &= ~(1 << COM1C0);  
+  TCCR1A |=  (1 << COM1C1); 
+  TCCR1A &= ~(1 << COM1C0);
+  
+  TCCR3B &= ~(1 << CS32); 
+  TCCR3B &= ~(1 << CS31); 
+  TCCR3B |=  (1 << CS30);
+  if(fastPwm){
+    TCCR3B |=  (1 << WGM33);
+    TCCR3B |=  (1 << WGM32);
+    TCCR3A |=  (1 << WGM31); 
+    TCCR3A &= ~(1 << WGM30);
+  }else{
+    TCCR3B |=  (1 << WGM33);
+    TCCR3B &= ~(1 << WGM32);
+    TCCR3A &= ~(1 << WGM31); 
+    TCCR3A &= ~(1 << WGM30);
+  }
+  ICR3 = topVal;
+  pinMode(led4Pin, OUTPUT);
+  pinMode(led5Pin, OUTPUT);
+  pinMode(led6Pin, OUTPUT);
+  TCCR3A |=  (1 << COM3A1); 
+  TCCR3A &= ~(1 << COM3A0); 
+  TCCR3A |=  (1 << COM3B1); 
+  TCCR3A &= ~(1 << COM3B0);   
+  TCCR3A |=  (1 << COM3C1); 
+  TCCR3A &= ~(1 << COM3C0);
 #endif
 
   // for fast PWM, PWM_freq = F_CPU/(N*(1+TOP))
@@ -520,25 +548,22 @@ void setOutput(byte chan, unsigned int val){
   case 2: 
     OCR1C = val; 
     break;
+  case 3: 
+    OCR3B = val; 
+    break;
+  case 4: 
+    OCR3C = val; 
+    break;
+  case 5: 
+    OCR3A = val; 
+    break;
 #endif
   }
 }
 
 void applyMeanLevel(byte chan){
   // Set PWM output to mean level
-  switch(chan){
-  case 0: 
-    OCR1A = (unsigned int)(mean[0]+0.5); 
-    break;
-  case 1: 
-    OCR1B = (unsigned int)(mean[1]+0.5); 
-    break;
-#ifdef __AVR_ATmega1280__
-  case 2: 
-    OCR1C = (unsigned int)(mean[2]+0.5); 
-    break;
-#endif
-  }
+  setOutput(chan, (unsigned int)(mean[0]+0.5));
 }
 
 float setupEnvelope(float duration, float envRiseFall){
