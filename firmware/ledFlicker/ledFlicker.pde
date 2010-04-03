@@ -22,7 +22,8 @@
  *
  * HISTORY:
  * 2010.03.19 Bob Dougherty (bobd@stanford.edu) finished a working version.
- *
+ * 2010.04.02 Bob DOugherty: Major overhaul to allow 6 channels on Arduino Mega.
+ * I also changed the code to allow each waveform to play out on multiple channels.
  */
 
 #define VERSION "0.2"
@@ -59,8 +60,8 @@
   #define led6Pin 5
   #define shiftDataPin 8
   #define shiftLatchPin 7
-  #define shiftEnablePin 6
-  #define shiftClockPin 5
+  #define shiftEnablePin 9
+  #define shiftClockPin 6
   #define NUM_WAVE_SAMPLES 600
   #define NUM_ENV_SAMPLES 60
   #define NUM_CHANNELS 6
@@ -75,6 +76,8 @@
   #define NUM_ENV_SAMPLES 30
   #define NUM_CHANNELS 2
 #endif
+
+#define NUM_WAVES 1
 
 #define INTERRUPT_FREQ 3000
 // The interrupt frequency is the rate at which the waveform samples will
@@ -125,10 +128,10 @@ static unsigned int g_envelopeDwell;
 
 volatile unsigned int g_envelopeTics;
 
-static float amplitude[NUM_CHANNELS];
+static float amplitude[NUM_CHANNELS*NUM_WAVES];
 static float mean[NUM_CHANNELS];
-static float sineInc[NUM_CHANNELS];
-unsigned int phase[NUM_CHANNELS];
+static float sineInc[NUM_WAVES];
+unsigned int phase[NUM_WAVES];
 
 // Instantiate Messenger object
 Messenger message = Messenger(',','[',']'); 
@@ -141,7 +144,7 @@ LedShift shift = LedShift(shiftDataPin, shiftLatchPin, shiftEnablePin, shiftCloc
 // message is received on the serial port.
 void messageReady() {
   message.echoBuffer();
-  float val[10];
+  float val[4+2*NUM_CHANNELS];
   int i = 0;
   if(message.available()) {
     // get the command byte
@@ -155,8 +158,8 @@ void messageReady() {
       Serial << F("Commands (optional params are enclosed in parens with default value):\n\n");
       Serial << F("[?]\n");
       Serial << F("    help (displays this text).\n");
-      Serial << F("[o"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",val") << i; } Serial << F("]\n");
-      Serial << F("    set the raw PWM outputs (0 - ") << PWM_MAXVAL << F(") for all channels.\n");
+      Serial << F("[m"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",val") << i; } Serial << F("]\n");
+      Serial << F("    set the mean outputs (0 - 1.0) for all channels.\n");
       Serial << F("[e,duration,riseFall]\n");
       Serial << F("    set the envelope duration and rise/fall times (in seconds).\n");
       Serial << F("[w,channel,frequency,amplitude,(phase=0),(mean=0.5)]\n");
@@ -184,14 +187,20 @@ void messageReady() {
       Serial << F("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]\n\n");
       break;
       
-    case 'o': // Set outputs
+    case 'm': // Set mean outputs
       // get incoming data
       while(message.available()) val[i++] = message.readFloat();
-      if(i<NUM_CHANNELS) Serial << F("set outputs requires one parameter for each channel.\n");
-      else{
+      if(i!=1 && i!=NUM_CHANNELS){
+        Serial << F("set outputs requires one param or ") << NUM_CHANNELS << F(" params.\n");
+      }else{
         stopISR();
-        for(i=0; i<NUM_CHANNELS; i++)
-          setOutput(i, (unsigned int)val[i]);
+        if(i==1){
+          setAllMeans(val[0]);
+        }else{
+          for(i=0; i<NUM_CHANNELS; i++)
+            setMean(i, val[i]);
+        }
+        applyMeans();
       }
       break;
       
@@ -208,22 +217,18 @@ void messageReady() {
 
     case 'w': // setup waveforms
       // get incoming data
-      val[4] = 0.5; // default mean
       while(message.available()) val[i++] = message.readFloat();
-      if(i<3){ // channel, freq and amplitude are mandatory
+      if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
         Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
       }
       else{
         stopISR();
-        // setup the waveform. params are: channel, freq, amp, phase, mean
-        if(val[0]>=0&&val[0]<NUM_CHANNELS){
-          setupWave((byte)val[0], val[1], val[2], val[3], val[4]);
-          applyMeanLevel((byte)val[0]);
+        // setup the waveform. params are: wave num, freq, phase, amp[], mean[]
+        if(val[0]>=0&&val[0]<NUM_WAVES){
+          setupWave((byte)val[0], val[1], val[2], &val[3]);
+          applyMeans();
         }else{
-          for(i=0; i<NUM_CHANNELS; i++){
-            setupWave(i, val[1], val[2], val[3], val[4]);
-            applyMeanLevel(i);
-          }
+          Serial << F("ERROR: waveform setup requires first param to be a valid wave number.\n");
         }
       }
       break;
@@ -341,10 +346,15 @@ void setup(){
 
   // Set defaults
   Serial << F("Setting default waveform.\n");
-  for(int i=0; i<NUM_CHANNELS; i++){
-    setupWave(i, 2.0, 1.0, i/3.0, 0.5);
-    applyMeanLevel(i);
-  }
+  //setupWave(i, 2.0, 1.0, {1 -1 -1 1 -1 -1}, NULL);
+  float amp[NUM_CHANNELS];
+  for(int i=0; i<NUM_CHANNELS; i++) 
+    amp[i] = 1.0;
+  for(int i=0; i<NUM_WAVES; i++)
+    setupWave(i, 2.0, 0.0, amp);
+  setAllMeans(0.5);
+  applyMeans();
+  //for(int i=0; i<NUM_CHANNELS; i++) setOutput(i, (unsigned int)val[0]);
   setupEnvelope(3.0, 0.2);
 
   // Attach the callback function to the Messenger
@@ -520,18 +530,22 @@ void stopISR(){    // Stops the ISR
   TIMSK2 &= ~(1<<OCIE2A);                    // disable interrupt
 } 
 
-void setupWave(byte chan, float freq, float amp, float ph, float mn){
+void setupWave(byte wvNum, float freq, float ph, float *amp){
   static unsigned int maxWaveIndex = NUM_WAVE_SAMPLES-1;
+  byte i;
   
   // Phase comes in as a relative value (0-1); convert to the index offset.
-  phase[chan] = ph*maxWaveIndex;
-  // Amplitude is 0-1
-  amplitude[chan] = amp;
-  // Mean is in relative 0-1. If it is not set to 0.5, then you will get clipped waveforms at high amplitude.
-  mean[chan] = mn*PWM_MAXVAL;
+  phase[wvNum] = ph*maxWaveIndex;
+  // Amplitude is -1 to 1 (negative inverts phase)
+  for(i=0; i<NUM_CHANNELS; i++){
+    if(amp!=NULL)
+      amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
+    else
+      amplitude[wvNum*NUM_CHANNELS+i] = 0.0;
+  }
   // the incremetor determines the output freq.
   // Wew scale by NUM_WAVE_SAMPLES/g_interruptFreq to convert freq in Hz to the incremeter value.
-  sineInc[chan] = freq*NUM_WAVE_SAMPLES/g_interruptFreq;
+  sineInc[wvNum] = freq*NUM_WAVE_SAMPLES/g_interruptFreq;
 }
 
 void setOutput(byte chan, unsigned int val){
@@ -561,9 +575,23 @@ void setOutput(byte chan, unsigned int val){
   }
 }
 
-void applyMeanLevel(byte chan){
-  // Set PWM output to mean level
-  setOutput(chan, (unsigned int)(mean[0]+0.5));
+void setAllMeans(float val){
+  if(val<0.0)      val = 0.0;
+  else if(val>1.0) val = 1.0;
+  for(byte i=0; i<NUM_CHANNELS; i++)
+    mean[i] = val*PWM_MAXVAL;
+}
+
+void setMean(byte chan, float val){
+  if(val<0.0)      val = 0.0;
+  else if(val>1.0) val = 1.0;
+  mean[chan] = val*PWM_MAXVAL;
+}
+
+void applyMeans(){
+  // Set PWM output to mean level for all channels
+  for(byte i=0; i<NUM_CHANNELS; i++)
+    setOutput(i, (unsigned int)(mean[i]+0.5));
 }
 
 float setupEnvelope(float duration, float envRiseFall){
@@ -603,39 +631,47 @@ unsigned int getEnvelopeIndex(unsigned int curTics){
 
 // This is the core function for waveform generation. It is called in the 
 // ISR to output the waveform to the PWNM channels. 
-unsigned int updateWave(byte chan, unsigned int curTics, unsigned int envIndex){
-  unsigned int val;
+void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals){
+  byte wv, ch, ampInd;
   
-  unsigned int sineIndex = (unsigned long int)((sineInc[chan]*curTics+0.5)+phase[chan])%NUM_WAVE_SAMPLES;
-
+  for(ch=0; ch<NUM_CHANNELS; ch++) 
+    vals[ch] = mean[ch]+0.5;
+  
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
-  val = (unsigned int)(g_envelope[envIndex]*amplitude[chan]*g_sineWave[sineIndex]+mean[chan]+0.5);
-  if(val<0) val = 0;
-  else if(val>PWM_MAXVAL) val = PWM_MAXVAL;
-  return(val);
+  for(wv=0; wv<NUM_WAVES; wv++){
+    unsigned int sineIndex = (unsigned long int)((sineInc[wv]*curTics+0.5)+phase[wv])%NUM_WAVE_SAMPLES;
+    float envSine = g_envelope[envIndex]*g_sineWave[sineIndex];
+    for(ch=0; ch<NUM_CHANNELS; ch++){
+      ampInd = wv*NUM_CHANNELS+ch;
+      vals[ch] += (unsigned int)(envSine*amplitude[ampInd]);
+      if(vals[ch]<0) vals[ch] = 0;
+      else if(vals[ch]>PWM_MAXVAL) vals[ch] = PWM_MAXVAL;
+    }
+  }
 }
 
 void validateWave(byte chan){
   unsigned int maxVal = 0.0;
   unsigned int minVal = 65535.0;
   float mnVal = 0.0;
-  unsigned int val;
+  unsigned int val[NUM_CHANNELS];
 
   for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
-    val = updateWave(chan, i, getEnvelopeIndex(i));
-    if(val>maxVal) maxVal = val;
-    if(val<minVal) minVal = val;
-    mnVal += (float)val/g_envelopeTicsDuration;
+    updateWave(i, getEnvelopeIndex(i), val);
+    if(val[chan]>maxVal) maxVal = val[chan];
+    if(val[chan]<minVal) minVal = val[chan];
+    mnVal += (float)val[chan]/g_envelopeTicsDuration;
   }
-  Serial << F("Wave #") << chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
+  Serial << F("Channel #") << chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
 }
 
 void dumpWave(byte chan){
-  unsigned int val;
+  unsigned int val[NUM_CHANNELS];
+  
   Serial << F("wave=[");
   for(int i=0; i<g_envelopeTicsDuration; i++){
-    val = updateWave(chan, i, getEnvelopeIndex(i));
-    Serial << val << F(",");
+    updateWave(i, getEnvelopeIndex(i), val);
+    Serial << val[chan] << F(",");
   }
   Serial << F("];\n");
 }
@@ -645,13 +681,22 @@ void dumpWave(byte chan){
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
 ISR(TIMER2_COMPA_vect) {
-  shift.Enable(); // We can use the enable pin to test ISR timing
-  unsigned int envInd = getEnvelopeIndex(g_envelopeTics);
-  OCR1A = updateWave(0, g_envelopeTics, envInd);
-  OCR1B = updateWave(1, g_envelopeTics, envInd);
-#if NUM_CHANNELS > 2
-  OCR1C = updateWave(2, g_envelopeTics, envInd);
-#endif
+  //shift.Enable(); // We can use the enable pin to test ISR timing
+  static unsigned int envInd;
+  static byte i;
+  unsigned int val[NUM_CHANNELS];
+  
+  envInd = getEnvelopeIndex(g_envelopeTics);
+  updateWave(g_envelopeTics, envInd, val);
+  
+  OCR1A = val[0];
+  OCR1B = val[1];
+  #if NUM_CHANNELS > 2
+  OCR1C = val[2];
+  OCR3B = val[3]; 
+  OCR3C = val[4]; 
+  OCR3A = val[5];
+  #endif
   // Make the interrupt self-terminating
   if(g_envelopeTics>=g_envelopeTicsDuration){
     stopISR();
@@ -662,7 +707,7 @@ ISR(TIMER2_COMPA_vect) {
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
   
-  shift.Disable(); // We can use the enable pin to test ISR timing
+  //shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
 void setCurrents(byte r, byte g, byte b){
