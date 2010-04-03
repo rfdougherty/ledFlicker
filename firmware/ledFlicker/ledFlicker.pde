@@ -26,7 +26,7 @@
  * I also changed the code to allow each waveform to play out on multiple channels.
  */
 
-#define VERSION "0.2"
+#define VERSION "0.3"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -77,9 +77,9 @@
   #define NUM_CHANNELS 2
 #endif
 
-#define NUM_WAVES 1
+#define NUM_WAVES 2
 
-#define INTERRUPT_FREQ 3000
+#define INTERRUPT_FREQ 2000
 // The interrupt frequency is the rate at which the waveform samples will
 // play out. A higher frequency will give better fidelity for high frequency
 // wavforms. However, the maximum rate is limited by the complexity of the 
@@ -242,6 +242,7 @@ void messageReady() {
 
     case 'h': // halt waveform playout
       stopISR();
+      applyMeans();
       break;
 
     case 's': // return playout status
@@ -347,11 +348,9 @@ void setup(){
   // Set defaults
   Serial << F("Setting default waveform.\n");
   //setupWave(i, 2.0, 1.0, {1 -1 -1 1 -1 -1}, NULL);
-  float amp[NUM_CHANNELS];
-  for(int i=0; i<NUM_CHANNELS; i++) 
-    amp[i] = 1.0;
+  float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++)
-    setupWave(i, 2.0, 0.0, amp);
+    setupWave(i, 0.0, 0.0, amp);
   setAllMeans(0.5);
   applyMeans();
   //for(int i=0; i<NUM_CHANNELS; i++) setOutput(i, (unsigned int)val[0]);
@@ -681,7 +680,7 @@ void dumpWave(byte chan){
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
 ISR(TIMER2_COMPA_vect) {
-  //shift.Enable(); // We can use the enable pin to test ISR timing
+  shift.Enable(); // We can use the enable pin to test ISR timing
   static unsigned int envInd;
   static byte i;
   unsigned int val[NUM_CHANNELS];
@@ -707,7 +706,7 @@ ISR(TIMER2_COMPA_vect) {
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
   
-  //shift.Disable(); // We can use the enable pin to test ISR timing
+  shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
 void setCurrents(byte r, byte g, byte b){
