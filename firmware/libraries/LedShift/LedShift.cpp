@@ -171,12 +171,14 @@ void LedShift::SendABit(unsigned char bitNum){
 
 
 void LedShift::SetCurrents(uint8_t red, uint8_t green, uint8_t blue){
-  // Set pwms to full-on:
-  SendPacket(BuildColorPacket(1023, 1023, 1023));
-  Latch();
+  // Set pwms to full-on:  
+  // Not sure why I have to do this many times for it to 'take'.
+  SetColorPacket(1023, 1023, 1023);
+  for(int i=0; i<100; i++){
+    SendPacket();
+  }  
   // Now set the current source values
   SendPacket(BuildCommandPacket(red, green, blue));
-  Latch();
 }
 
 float LedShift::GetCurrentPercent(uint8_t currentByte){

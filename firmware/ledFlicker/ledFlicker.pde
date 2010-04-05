@@ -34,8 +34,8 @@
 // We make extensive use of this so that we can be verbose in our messages
 // without using up precious RAM. (Using Flash saved us over 2Kb of RAM!)
 #include <Flash.h>
-#include "Messenger.h"
-#include "LedShift.h"
+#include <Messenger.h>
+#include <LedShift.h>
 
 
 // atmega 168  has  16k flash, 512 EEPROM, 1k RAM
@@ -680,7 +680,7 @@ void dumpWave(byte chan){
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
 ISR(TIMER2_COMPA_vect) {
-  shift.Enable(); // We can use the enable pin to test ISR timing
+  //shift.Enable(); // We can use the enable pin to test ISR timing
   static unsigned int envInd;
   static byte i;
   unsigned int val[NUM_CHANNELS];
@@ -706,29 +706,14 @@ ISR(TIMER2_COMPA_vect) {
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
   
-  shift.Disable(); // We can use the enable pin to test ISR timing
+  //shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
 void setCurrents(byte r, byte g, byte b){
-  long unsigned int p;
-  
-  // Not sure why I have to do this many times for it to 'take'.
-  p = shift.BuildColorPacket(1023, 1023, 1023);
-  for(int i=0; i<100; i++){
-    shift.SendPacket(p);
-    shift.Latch();
-  }
-  //Serial << F("Sent color packet: ") << p << F("\n");
-    
-  p = shift.BuildCommandPacket(r, g, b);
-  shift.SendPacket(p);
-  shift.Latch();
-  //Serial << F("Sent command packet: ") << p << F("\n");
-  //shift.SetCurrents(r, g, b);
+  shift.SetCurrents(r, g, b);
   Serial << F("Current command packet sent: \n"); 
   Serial << F("   Red: ") << (int)r << F(" = ") << shift.GetCurrentPercent(r) << F("%\n");
   Serial << F(" Green: ") << (int)g << F(" = ") << shift.GetCurrentPercent(g) << F("%\n");
   Serial << F("  Blue: ") << (int)b << F(" = ") << shift.GetCurrentPercent(b) << F("%\n");
-  
 }
 
