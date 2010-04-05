@@ -61,6 +61,20 @@ long unsigned int LedShift::BuildColorPacket(unsigned int red, unsigned int gree
     return dp.value;
 }
 
+// SetColorPacket sets  the current dataPacket for LED brightness PWM.
+//
+// red, green, and blue are brightness values from 0 (off) to 1023 (full).
+// 
+void LedShift::SetColorPacket(unsigned int red, unsigned int green, unsigned int blue){
+    // initialize all of the bits to zero.
+    curDataPacket.value = 0;
+
+    curDataPacket.red   = red;
+    curDataPacket.green = green;
+    curDataPacket.blue  = blue;
+    // command bit stays 0: dp.command = 0;
+}
+
 // BuildCommandPacket returns a 32-bit dataPacket for sending commands to the A6280/1.
 //
 // redDotCorrect, greenDotCorrect, and blueDotCorrect lets you control what 
@@ -98,21 +112,63 @@ long unsigned int LedShift::BuildCommandPacket(uint8_t red, uint8_t green, uint8
 
 void LedShift::SendPacket(long unsigned int dp){
   // Loop over the 31 data bits
-  for(int i = 1; i < 32 + 1; i++){
+  for(signed char i=31; i>=0; i--){
     // Data is read on rising edge of the clock pin, so set clock low here
-    //*clockReg &= ~clockBit;
-    // Set the appropriate Data In value according to the packet.
-    if ((dp >> (32 - i)) & 1)
+    // TO DO: if the clock and data pins are on the same port, we could save an instruction
+    // by setting the clock low when we set the data bit.
+    *clockReg &= ~clockBit;
+    // Set the appropriate Data In value
+    if ((dp >> i) & 1)
       *dataReg |= dataBit;
     else
       *dataReg &= ~dataBit;
     // Now set the clock high to send data
-    //*clockReg |= clockBit;
-    // // Toggle the clock bit twice.
-    *clockReg ^= clockBit;
-    *clockReg ^= clockBit;
+    *clockReg |= clockBit;
   }
+ *latchReg |= latchBit;
+ *latchReg &= ~latchBit;
 }
+
+void LedShift::SendPacket(){
+  // Loop over the 31 data bits
+  // Looping over all 31 bits would be simpler, but that code is much slower. Bit-shifting each 
+  // of the four bytes is *much* faster.
+  //for(signed char i=31; i>=0; i--){
+  for(signed char curByte=3; curByte>=0; curByte--){
+    for(signed char bitNum=7; bitNum>=0; bitNum--){
+      // Data is read on rising edge of the clock pin, so set clock low here
+      // TO DO: if the clock and data pins are on the same port, we could save an instruction
+      // by setting the clock low when we set the data bit.
+      *clockReg &= ~clockBit;
+      // Set the appropriate Data In value
+      if((curDataPacket.byte[curByte] >> bitNum) & 1)
+        *dataReg |= dataBit;
+      else
+        *dataReg &= ~dataBit;
+      // Now set the clock high to send data
+      *clockReg |= clockBit;
+    }
+  }
+ *latchReg |= latchBit;
+ *latchReg &= ~latchBit;
+}
+
+void LedShift::SendABit(unsigned char bitNum){
+  // TO DO: if the clock and data pins are on the same port, we could save an instruction
+  // by setting the clock low when we set the data bit.
+  *clockReg &= ~clockBit;
+  // Set the appropriate Data In value
+  unsigned char curByte = bitNum/8;
+  bitNum = bitNum%8;
+  //if((curDataPacket.byte[curByte] >> bitNum) & 1)
+  if((curDataPacket.value >> bitNum) & 1)
+    *dataReg |= dataBit;
+  else
+    *dataReg &= ~dataBit;
+  // Clock in the data
+  *clockReg |= clockBit;
+}
+
 
 void LedShift::SetCurrents(uint8_t red, uint8_t green, uint8_t blue){
   // Set pwms to full-on:

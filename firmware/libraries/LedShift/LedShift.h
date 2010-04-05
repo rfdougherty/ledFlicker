@@ -20,6 +20,7 @@
 
 typedef union dataPacket{
     long unsigned int value;
+    unsigned char byte[4];
     struct{
         unsigned greenCurrent:7;
         unsigned clockMode:2;
@@ -47,7 +48,10 @@ public:
   long unsigned int BuildColorPacket(unsigned int red, unsigned int green, unsigned int blue);
   long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue);
   long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue, uint8_t clockMode);
+  void SetColorPacket(unsigned int red, unsigned int green, unsigned int blue);
   void SendPacket(long unsigned int dp);
+  void SendPacket();
+  void SendABit(unsigned char bitNum);
   void Latch();
   void Enable();
   void Disable();
@@ -67,6 +71,8 @@ private:
   uint8_t enableBit;
   volatile uint8_t *clockReg;
   uint8_t clockBit;
+
+  dataPacket curDataPacket;
 };
 
 #endif
