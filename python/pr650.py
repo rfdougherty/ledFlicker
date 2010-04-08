@@ -1,9 +1,19 @@
+"""
+Class to control a PhotoResearch PR650 spectrophotometer
+(http://www.photoresearch.com/)
+
+Copyright 2010 Bob Dougherty
+
+Based on code from the PsychoPy library (http://www.psychopy.org/)
+Copyright (C) 2009 Jonathan Peirce
+Distributed under the terms of the GNU General Public License (GPL).
+
+"""
+
 import numpy, sys, time, serial, string
 
 class PR650:
-    """An interface to the PR650 via the serial port. 
-    MORE HERE
-    """
+    # An interface to the PR650 via the serial port. 
 
     def __init__(self, port):
         self.port = port
@@ -73,6 +83,11 @@ class PR650:
     def measureLum(self):
         self.measure()
         return self.lum
+
+    def measureSpectrum(self):
+        self.measure()
+        raw = self.sendMessage('d5')
+        return self.parseSpectrumOutput(raw), self.lum
 
     def getLum(self):
         return self.lum 
