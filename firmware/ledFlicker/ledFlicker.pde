@@ -22,14 +22,16 @@
  *
  * HISTORY:
  * 2010.03.19 Bob Dougherty (bobd@stanford.edu) finished a working version.
- * 2010.04.02 Bob DOugherty: Major overhaul to allow 6 channels on Arduino Mega.
+ * 2010.04.02 Bob Dougherty: Major overhaul to allow 6 channels on Arduino Mega.
  * I also changed the code to allow each waveform to play out on multiple channels.
  */
 
-#define VERSION "0.3"
+#define VERSION "0.4"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
+#include <avr/eeprom.h>
+
 // Flash library is available from http://arduiniana.org/libraries/Flash/
 // We make extensive use of this so that we can be verbose in our messages
 // without using up precious RAM. (Using Flash saved us over 2Kb of RAM!)
@@ -76,6 +78,7 @@
   #define NUM_ENV_SAMPLES 30
   #define NUM_CHANNELS 2
 #endif
+
 
 #define NUM_WAVES 2
 
@@ -132,6 +135,15 @@ static float amplitude[NUM_CHANNELS*NUM_WAVES];
 static float mean[NUM_CHANNELS];
 static float sineInc[NUM_WAVES];
 unsigned int phase[NUM_WAVES];
+
+//
+// Define EEPROM variables for static configuration vars
+//
+// We don't bother setting defaults here; we'll check for valid values and defaults in the code.
+//
+uint8_t EEMEM gee_currents[NUM_CHANNELS];
+float EEMEM gee_rgb2lms[9];
+char EEMEM gee_deviceId[16];
 
 // Instantiate Messenger object
 Messenger message = Messenger(',','[',']'); 
@@ -267,12 +279,18 @@ void messageReady() {
     case 'c': // Set LED max currents on A6280 constant current source chip
       // get incoming data
       while(message.available()) val[i++] = message.readInt();
-      if(i<3)
-        Serial << F("LED current requires 3 parameters.\n");
-      if(val[0]<0||val[0]>127||val[1]<0||val[1]>127||val[2]<0||val[2]>127)
-         Serial << F("LED current values must be >=0 and <=127.\n");
-      else{
-        setCurrents((byte)val[0], (byte)val[1], (byte)val[2]);
+      if(i<NUM_CHANNELS)
+        Serial << F("LED current requires ") << NUM_CHANNELS << F(" parameters.\n");
+      
+      for(i=0; i<NUM_CHANNELS; i++)
+        if(val[i]<0||val[i]>127){
+          Serial << F("LED current values must be >=0 and <=127.\n");
+          val[0] = 255;
+          break;
+        }
+      if(val[0]!=255){
+        saveCurrents(val);
+        setCurrents();
       }
       break;
 
@@ -339,11 +357,7 @@ void setup(){
   Serial << F("Interrupt Freq: ") << g_interruptFreq << F("; requested freq was: ") << INTERRUPT_FREQ << F("\n");
   
   Serial << F("Configuring constant current source shift registers.\n");
-  // TO DO: get these from EEPROM!
-  byte rc = 64;
-  byte gc = 64;
-  byte bc = 64;
-  setCurrents(rc, gc, bc);
+  setCurrents();
 
   // Set defaults
   Serial << F("Setting default waveform.\n");
@@ -709,11 +723,32 @@ ISR(TIMER2_COMPA_vect) {
   //shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
-void setCurrents(byte r, byte g, byte b){
-  shift.SetCurrents(r, g, b);
+void saveCurrents(float *newCurrents){
+  byte cur[NUM_CHANNELS];
+  for(int i=0; i<NUM_CHANNELS; i++)
+    cur[i] = (byte)newCurrents[i];
+  eeprom_write_block((void*)cur, (void*)gee_currents, NUM_CHANNELS);
+}
+
+void setCurrents(){
+  byte cur[NUM_CHANNELS];
+  bool err = false;
+  byte i;
+  
+  eeprom_read_block((void*)cur, (const void*)gee_currents, NUM_CHANNELS);
+  for(i=0; i<NUM_CHANNELS; i++)
+    if(cur[i]>127){
+      err = true;
+      break;
+    }
+  if(err){
+    for(i=0; i<NUM_CHANNELS; i++) cur[i] = 64;
+    Serial << F("Corrupt current spec in EEPROM- using defaults.\n");
+  }
+  shift.SetCurrents(cur[0], cur[1], cur[2]);
   Serial << F("Current command packet sent: \n"); 
-  Serial << F("   Red: ") << (int)r << F(" = ") << shift.GetCurrentPercent(r) << F("%\n");
-  Serial << F(" Green: ") << (int)g << F(" = ") << shift.GetCurrentPercent(g) << F("%\n");
-  Serial << F("  Blue: ") << (int)b << F(" = ") << shift.GetCurrentPercent(b) << F("%\n");
+  Serial << F("   Red: ") << (int)cur[0] << F(" = ") << shift.GetCurrentPercent(cur[0]) << F("%\n");
+  Serial << F(" Green: ") << (int)cur[1] << F(" = ") << shift.GetCurrentPercent(cur[1]) << F("%\n");
+  Serial << F("  Blue: ") << (int)cur[2] << F(" = ") << shift.GetCurrentPercent(cur[2]) << F("%\n");
 }
 
