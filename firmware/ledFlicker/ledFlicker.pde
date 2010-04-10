@@ -132,7 +132,7 @@ static unsigned int g_envelopeDwell;
 volatile unsigned int g_envelopeTics;
 
 static float amplitude[NUM_CHANNELS*NUM_WAVES];
-static float mean[NUM_CHANNELS];
+static float g_mean[NUM_CHANNELS];
 static float sineInc[NUM_WAVES];
 unsigned int phase[NUM_WAVES];
 
@@ -145,6 +145,10 @@ uint8_t EEMEM gee_currents[NUM_CHANNELS];
 float EEMEM gee_rgb2lms[9];
 char EEMEM gee_deviceId[16];
 
+// Color transform matrices
+float g_rgb2lms[9];
+float g_lms2rgb[9];
+
 // Instantiate Messenger object
 Messenger message = Messenger(',','[',']'); 
 
@@ -156,7 +160,7 @@ LedShift shift = LedShift(shiftDataPin, shiftLatchPin, shiftEnablePin, shiftCloc
 // message is received on the serial port.
 void messageReady() {
   message.echoBuffer();
-  float val[4+2*NUM_CHANNELS];
+  float val[max(2*NUM_CHANNELS,12)];
   int i = 0;
   if(message.available()) {
     // get the command byte
@@ -195,6 +199,9 @@ void messageReady() {
       Serial << F("    validate the specified waveform. Prints some intenral variables and waveform stats.\n");
       Serial << F("[d,channel]\n");
       Serial << F("    dump the specified wavform. (Dumps a lot of data to your serial port!\n\n");
+      Serial << F("[l,m11,m12,m13,m21,m22,m23,m31,m32,m33]\n");
+      Serial << F("    set the rgb2lms color transform matrix. Note the element order is row1, row2, row3.\n");
+      Serial << F("    The lms2rgb matrix is also used, but it will be computed internally.\n");      
       Serial << F("For example:\n");
       Serial << F("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]\n\n");
       break;
@@ -235,7 +242,7 @@ void messageReady() {
       }
       else{
         stopISR();
-        // setup the waveform. params are: wave num, freq, phase, amp[], mean[]
+        // setup the waveform. params are: wave num, freq, phase, amp[]
         if(val[0]>=0&&val[0]<NUM_WAVES){
           setupWave((byte)val[0], val[1], val[2], &val[3]);
           applyMeans();
@@ -279,18 +286,19 @@ void messageReady() {
     case 'c': // Set LED max currents on A6280 constant current source chip
       // get incoming data
       while(message.available()) val[i++] = message.readInt();
-      if(i<NUM_CHANNELS)
+      if(i<NUM_CHANNELS){
         Serial << F("LED current requires ") << NUM_CHANNELS << F(" parameters.\n");
-      
-      for(i=0; i<NUM_CHANNELS; i++)
-        if(val[i]<0||val[i]>127){
-          Serial << F("LED current values must be >=0 and <=127.\n");
-          val[0] = 255;
-          break;
+      }else{
+        for(i=0; i<NUM_CHANNELS; i++)
+          if(val[i]<0||val[i]>127){
+            Serial << F("LED current values must be >=0 and <=127.\n");
+            val[0] = 255;
+            break;
+          }
+        if(val[0]!=255){
+          saveCurrents(val);
+          setCurrents();
         }
-      if(val[0]!=255){
-        saveCurrents(val);
-        setCurrents();
       }
       break;
 
@@ -299,7 +307,7 @@ void messageReady() {
         val[0] = message.readInt();
         stopISR();
         Serial << F("amplitude: ") << amplitude[(unsigned int)val[0]] << F("\n");
-        Serial << F("mean: ") << mean[(unsigned int)val[0]] << F("\n");
+        Serial << F("mean: ") << g_mean[(unsigned int)val[0]] << F("\n");
         Serial << F("sineInc: ") << sineInc[(unsigned int)val[0]] << F("\n");
         Serial << F("envTicsDuration: ") << g_envelopeTicsDuration << F("\n");
         Serial << F("envelopeStartEnd: ")<< g_envelopeStartEnd << F("\n");
@@ -316,6 +324,15 @@ void messageReady() {
         dumpWave((byte)val[0]);
       }
       else Serial << F("ERROR: dump command requires a channel parameter.\n");
+      break;
+
+    case 'l': // Set lms2rgb color transform
+      while(message.available()) val[i++] = message.readFloat();
+      if(i<9){
+        Serial << F("rgb2lms requires 9 values!\n");
+      }else{
+        setLmsMatrix(val);
+      }
       break;
 
     default:
@@ -550,10 +567,13 @@ void setupWave(byte wvNum, float freq, float ph, float *amp){
   // Phase comes in as a relative value (0-1); convert to the index offset.
   phase[wvNum] = ph*maxWaveIndex;
   // Amplitude is -1 to 1 (negative inverts phase)
-  for(i=0; i<NUM_CHANNELS; i++){
-    if(amp!=NULL)
+  if(amp!=NULL){
+    // *** WORK HERE!
+    lmsToRgb(amp, g_mean);
+    for(i=0; i<NUM_CHANNELS; i++)
       amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
-    else
+  }else{
+    for(i=0; i<NUM_CHANNELS; i++)
       amplitude[wvNum*NUM_CHANNELS+i] = 0.0;
   }
   // the incremetor determines the output freq.
@@ -592,19 +612,19 @@ void setAllMeans(float val){
   if(val<0.0)      val = 0.0;
   else if(val>1.0) val = 1.0;
   for(byte i=0; i<NUM_CHANNELS; i++)
-    mean[i] = val*PWM_MAXVAL;
+    g_mean[i] = val*PWM_MAXVAL;
 }
 
 void setMean(byte chan, float val){
   if(val<0.0)      val = 0.0;
   else if(val>1.0) val = 1.0;
-  mean[chan] = val*PWM_MAXVAL;
+  g_mean[chan] = val*PWM_MAXVAL;
 }
 
 void applyMeans(){
   // Set PWM output to mean level for all channels
   for(byte i=0; i<NUM_CHANNELS; i++)
-    setOutput(i, (unsigned int)(mean[i]+0.5));
+    setOutput(i, (unsigned int)(g_mean[i]+0.5));
 }
 
 float setupEnvelope(float duration, float envRiseFall){
@@ -648,7 +668,7 @@ void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals)
   byte wv, ch, ampInd;
   
   for(ch=0; ch<NUM_CHANNELS; ch++) 
-    vals[ch] = mean[ch]+0.5;
+    vals[ch] = g_mean[ch]+0.5;
   
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
   for(wv=0; wv<NUM_WAVES; wv++){
@@ -751,4 +771,74 @@ void setCurrents(){
   Serial << F(" Green: ") << (int)cur[1] << F(" = ") << shift.GetCurrentPercent(cur[1]) << F("%\n");
   Serial << F("  Blue: ") << (int)cur[2] << F(" = ") << shift.GetCurrentPercent(cur[2]) << F("%\n");
 }
+
+void invertColor(float A[], float iA[]){
+  // Quick-n-dirty 3x3 matrix inverse.
+  // To do: check precision error (e.g., large determinant)
+  float determinant = +A[0]*(A[4]*A[8]-A[7]*A[5])
+                      -A[1]*(A[3]*A[8]-A[5]*A[6])
+                      +A[2]*(A[3]*A[7]-A[4]*A[6]);
+  float invdet = 1/determinant;
+  iA[0] =  (A[4]*A[8]-A[7]*A[5])*invdet;
+  iA[1] = -(A[1]*A[8]-A[2]*A[7])*invdet;
+  iA[2] =  (A[1]*A[5]-A[2]*A[4])*invdet;
+  iA[3] = -(A[3]*A[8]-A[5]*A[6])*invdet;
+  iA[4] =  (A[0]*A[8]-A[2]*A[6])*invdet;
+  iA[5] = -(A[0]*A[5]-A[3]*A[2])*invdet;
+  iA[6] =  (A[3]*A[7]-A[6]*A[4])*invdet;
+  iA[7] = -(A[0]*A[7]-A[6]*A[1])*invdet;
+  iA[8] =  (A[0]*A[4]-A[3]*A[1])*invdet;
+}
+
+// Copies the global rgb2lms matrix from EEPROM and inverts it to also set lms2rgb.
+// If rgb2lms is not null, then the EEPROM data is updated with the new matrix before setting the globals.
+void setLmsMatrix(float rgb2lms[]){
+  if(rgb2lms!=NULL)
+    eeprom_write_block((void*)rgb2lms, (void*)gee_rgb2lms, 9*sizeof(float));
+  eeprom_read_block((void*)g_rgb2lms, (const void*)gee_rgb2lms, 9*sizeof(float));
+  Serial << F("rgb2lms: [ ") << g_rgb2lms[0] << F(",") << g_rgb2lms[1] << F(",") << g_rgb2lms[2] << F("\n");
+  Serial << F("           ") << g_rgb2lms[3] << F(",") << g_rgb2lms[4] << F(",") << g_rgb2lms[5] << F("\n");
+  Serial << F("           ") << g_rgb2lms[6] << F(",") << g_rgb2lms[7] << F(",") << g_rgb2lms[8] << F(" ]\n"); 
+  invertColor(g_rgb2lms, g_lms2rgb); 
+  Serial << F("lms2rgb: [ ") << g_lms2rgb[0] << F(",") << g_lms2rgb[1] << F(",") << g_lms2rgb[2] << F("\n");
+  Serial << F("           ") << g_lms2rgb[3] << F(",") << g_lms2rgb[4] << F(",") << g_lms2rgb[5] << F("\n");
+  Serial << F("           ") << g_lms2rgb[6] << F(",") << g_lms2rgb[7] << F(",") << g_lms2rgb[8] << F(" ]\n");
+}
+
+void lmsToRgb(float stim[], float backRgbInt[]){
+  setLmsMatrix(NULL);
+  // *** FIX ME:
+  float backRgb[3] = {0.5,0.5,0.5};
+  Serial << F("lms: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
+  float scale = 1.0;
+  float backLms[3];
+  xformColor(backRgb, g_rgb2lms, backLms);
+  float scaledStimLMS[3];
+  scaledStimLMS[0] = stim[0]*backLms[0];
+  scaledStimLMS[1] = stim[1]*backLms[1];
+  scaledStimLMS[2] = stim[2]*backLms[2];
+  // stim is transformed in-place
+  xformColor(scaledStimLMS, g_lms2rgb, stim);
+  // scale by the max so that it is physically realizable
+  float maxVal = 0;
+  for(byte i=0; i<3; i++){
+    float tmp = fabs(stim[i]);
+    if(tmp>maxVal) maxVal = tmp;
+  }
+  if(maxVal>1){
+    Serial << F("rgb exceeds max!\n");
+  }
+  Serial << F("rgb: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
+  //stimRGB = stimRGB/abs(stimRGB).max()*scale;
+  // compute the actual LMS contrast
+  //float actualLMS[3]; actualLMS = xformColor(stimRGB, g_rgb2lms, actualLMS) / backLms / 2.0;
+  
+}
+
+void xformColor(float vecIn[], float tm[], float vecOut[]){
+  vecOut[0] = vecIn[0]*tm[0] + vecIn[1]*tm[1] + vecIn[2]*tm[2];
+  vecOut[1] = vecIn[0]*tm[3] + vecIn[1]*tm[4] + vecIn[2]*tm[5];
+  vecOut[2] = vecIn[0]*tm[6] + vecIn[1]*tm[7] + vecIn[2]*tm[8];
+}
+
 
