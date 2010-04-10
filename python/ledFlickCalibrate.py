@@ -11,7 +11,7 @@ import os, serial, time, numpy, pylab
 # our own pr650 module
 import pr650
 
-arduinoDev = '/dev/ttyUSB0'
+arduinoDev = '/dev/ttyUSB2'
 
 ledSer = serial.Serial(arduinoDev, 57600, timeout=1)
 # Get the arduino serial number
@@ -79,8 +79,12 @@ outName = board+"_led0_"+time.strftime("%y%m%d%H%M")
 numpy.savez(outName, board=board, ledName=ledName, calDate=calDate, nm=nm, specLum=specLum, specPow=specPow, pwmLevels=pwmLevels, curLevels=curLevels, gamma=gamma)
 
 # to read the data: 
-#  npz = numpy.load(outName)
-#  specPow=npz['specPow']
+# import numpy
+# npz = numpy.load('mega1_led0_1004071750.npz')
+#  nm = npz['nm']
+#  specPow = npz['specPow']
+#  spec = numpy.mean(specPow[:,1:4,:],2)
+#  spec.tofile('spec.txt',sep=",")
 
 specMn = numpy.mean(specPow,2)
 specSd = numpy.std(specPow,2)
@@ -121,20 +125,31 @@ sensors = numpy.fromfile('stockman4.txt',sep=' ')
 sensors = sensors.reshape(101,4)
 snm = sensors[:,0]
 sensors = sensors[:,1:4]
-if numpy.any(snm!=nm)
+if numpy.any(snm!=nm):
     raise NameError('Mismatch between sensor wavelengths and measured wavelengths!')
+
 pylab.figure
 pylab.plot(nm,sensors[:,0],'r',nm,sensors[:,1],'g',nm,sensors[:,2],'b')
 pylab.xlabel('Wavelength (nm)')
 pylab.ylabel('Relative absorption')
 pylab.title('Cone Fundamentals')
-#pylab.show()
+pylab.show()
 
-rgb2lms = pylab.dot(pylab.transpose(sensors), specMn[:,1:4])
-lms2rgb = pylab.linalg.inv(rgb2lms)
-rgb2lms = around(rgb2lms/rgb2lms.max()*32767)
+rgb2lms = numpy.dot(numpy.transpose(sensors), specMn[:,1:4])
+lms2rgb = numpy.linalg.inv(rgb2lms)
+#rgb2lms = numpy.round(rgb2lms/rgb2lms.max()*32767)
+rgb2lms = rgb2lms/rgb2lms.max()
 
-stimLMS = numpy.array([0,0,1])
+# Set the rgb2lms xform in the device
+cmd = "[l,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f]\n" % (rgb2lms[0,0],rgb2lms[0,1],rgb2lms[0,2],rgb2lms[1,0],rgb2lms[1,1],rgb2lms[1,2],rgb2lms[2,0],rgb2lms[2,1],rgb2lms[2,2])
+ledSer.write(cmd)
+time.sleep(0.5)
+out = ledSer.readlines()
+for l in out: print(l),
+
+# E.g., cmd='[l,0.407322,0.313378,0.226669,0.094211,0.361131,0.316449,0.026011,0.037678,1.000000]\n'
+
+stimLMS = numpy.array([2,-1,0])
 contrast = 1.0
 
 lmsBack = numpy.dot(rgb2lms,(numpy.array([0.5,0.5,0.5])))
@@ -148,8 +163,8 @@ print("ActualLMS contrast = [%0.2f, %0.2f, %0.2f]\n" % (actualLMS[0],actualLMS[1
 
 # ledSer = serial.Serial('/dev/ttyUSB0', 57600, timeout=1)
 # Reset means and currents
-ledSer.write("[m,0.5,0.5,0.5,0.5,0.5,0.5][c,64,64,64]\n")
-cmd = "[e,10,.1][w,0,1,0,%0.4f,%0.4f,%0.4f,0,0,0][p]" % (stimRGB[0],stimRGB[1],stimRGB[2])
+#ledSer.write("[m,0.5,0.5,0.5,0.5,0.5,0.5][c,64,64,64]\n")
+cmd = "[e,10,.2][w,0,1,0,%0.4f,%0.4f,%0.4f,0,0,0][p]\n" % (stimRGB[0],stimRGB[1],stimRGB[2])
 ledSer.write(cmd)
 
 

@@ -8,11 +8,12 @@ load stockman
 sensors = stockman;
 % Load the raw RGB spectra (should load vars spectraRawRed,
 % spectraRawGreen, spectraRawBLue).
-load spectraRaw;
-spectra(:,1)           = interpPR650(spectraRawRed);
-spectra(:,2)           = interpPR650(spectraRawGreen);
-[spectra(:,3), lambda] = interpPR650(spectraRawBlue);
-% figure; plot(lambda,spectra(:,1),'r',lambda,spectra(:,2),'g',lambda,spectra(:,3),'b')
+load('../python/spec.txt');
+spec = reshape(spec,[3,101])';
+spectra(:,1)           = interpPR650(spec(:,1));
+spectra(:,2)           = interpPR650(spec(:,2));
+[spectra(:,3), lambda] = interpPR650(spec(:,3));
+figure; plot(lambda,spectra(:,1),'r',lambda,spectra(:,2),'g',lambda,spectra(:,3),'b')
 
 rgb2lms = sensors'*spectra;
 % Normalize rgb2lms to fit into a short int:
