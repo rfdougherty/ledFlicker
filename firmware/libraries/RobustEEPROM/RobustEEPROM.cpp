@@ -5,7 +5,17 @@ extern "C" {
 
 #include "WProgram.h"
 #include <avr/eeprom.h>
+#include <util/crc16.h>
 #include "RobustEEPROM.h"
+
+void RobustEEPROM::readBytes(unsigned int address, unsigned int nBytes, byte *data){
+  eeprom_read_block((void *)data, const void *pointer_eeprom, size_t n) 
+  return;
+}
+
+void RobustEEPROM::writeBytes(int address, unsigned int address, unsigned int nBytes, byte *data){
+  eeprom_write_byte((unsigned char *) address, value);
+}
 
 byte RobustEEPROM::readByte(int address){
   return eeprom_read_byte((unsigned char *) address);
