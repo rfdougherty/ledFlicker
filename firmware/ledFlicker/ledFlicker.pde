@@ -88,12 +88,11 @@
 // wavforms. However, the maximum rate is limited by the complexity of the 
 // ISR (interrupt function) that is run. If you set the INTERRUPT_FREQ too high, 
 // the CPU will spend all its time servicing the interrupt, effectively locking 
-// it up. For the current 3-channel ISR, we can easily go at 1kHz. While 2kHz
-// works, the serial port stops responding, so we can't process commands while 
-// playing a wavform.  If we tighten up the ISR code, we could go faster.
-// See http://www.embedded.com/columns/15201575?_requestid=291362
-// http://www.cs.uiowa.edu/~jones/bcd/divide.html#fixed
-// http://www.piclist.com/techref/method/math/fixed.htm
+// it up. For the current 6-channel ISR, we can easily go at 2kHz. If we tighten
+// up the ISR code, we could go faster. See:
+//   http://www.embedded.com/columns/15201575?_requestid=291362
+//   http://www.cs.uiowa.edu/~jones/bcd/divide.html#fixed
+//   http://www.piclist.com/techref/method/math/fixed.htm
 
 
 // g_interruptFreq is the same as the INTERRUPT_FREQ, except for qunatization
@@ -106,7 +105,9 @@ static float g_interruptFreq;
 
 // The maxval determines the resolution of the PWM output. E.g.:
 // 255 for 8-bit, 511 for 9-bit, 1023 for 10-bit, 2047 for 11-bit, 4095 for 12 bit.
-// But remember that higher resolution means slower PWM frequency.
+// But remember that higher resolution means slower PWM frequency. I.e., 
+// PWM freq ~= F_CPU/PWM_MAXVAL for fast PWM and ~= F_CPU/PWM_MAXVAL/2 for 
+// phase/freq correct PWM.
 #define PWM_MAXVAL 1023
 #define PWM_MIDVAL (PWM_MAXVAL/2.0)
 // Fast PWM goes twice as fast, but the pulses aren't as spectrally nice as
@@ -139,7 +140,8 @@ unsigned int phase[NUM_WAVES];
 //
 // Define EEPROM variables for static configuration vars
 //
-// We don't bother setting defaults here; we'll check for valid values and defaults in the code.
+// We don't bother setting defaults here; we'll check for valid values and set 
+// the necessary defaults in the code.
 //
 uint8_t EEMEM gee_currents[NUM_CHANNELS];
 float EEMEM gee_rgb2lms[9];
@@ -207,7 +209,6 @@ void messageReady() {
       break;
       
     case 'm': // Set mean outputs
-      // get incoming data
       while(message.available()) val[i++] = message.readFloat();
       if(i!=1 && i!=NUM_CHANNELS){
         Serial << F("set outputs requires one param or ") << NUM_CHANNELS << F(" params.\n");
@@ -224,7 +225,6 @@ void messageReady() {
       break;
       
     case 'e': // Set envelope params
-      // get incoming data
       while(message.available()) val[i++] = message.readFloat();
       if(i<2) Serial << F("ERROR: envelope setup requires 2 parameters.\n");
       else{
@@ -235,7 +235,6 @@ void messageReady() {
       break;
 
     case 'w': // setup waveforms
-      // get incoming data
       while(message.available()) val[i++] = message.readFloat();
       if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
         Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
@@ -284,7 +283,6 @@ void messageReady() {
       break;
 
     case 'c': // Set LED max currents on A6280 constant current source chip
-      // get incoming data
       while(message.available()) val[i++] = message.readInt();
       if(i<NUM_CHANNELS){
         Serial << F("LED current requires ") << NUM_CHANNELS << F(" parameters.\n");
@@ -345,16 +343,17 @@ void messageReady() {
 void setup(){
   Serial.begin(BAUD);
   Serial << F("*********************************************************\n");
-  Serial << F(  "* ledFlicker firmware version ") << VERSION << F("\n");
-  Serial << F("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>\n"); 
+  Serial << F("* ledFlicker firmware version ") << VERSION << F("\n");
+  Serial << F("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>\n");
   Serial << F("* For more info, see http://vistalab.stanford.edu/\n");
   Serial << F("*********************************************************\n\n");
   
-  // Compute the wave and envelope LUTs. We could precompute and store them in flash, but
-  // they only take a a few 10's of ms to compute when we boot up and it simplifies the code.
-  // However, they do cramp our use of RAM. If the RAM limit becomes a problem, we should store
-  // them in flash and use PROGMEM to force the compiler to read directly from flash and not 
-  // load them into RAM.
+  // Compute the wave and envelope LUTs. We could precompute and store them in 
+  //flash, but they only take a few 10's of ms to compute when we boot up and it
+  // simplifies the code. However, they do use much precious RAM. If the RAM 
+  // limit becomes a problem, we might considerlooking into storing them in 
+  // flash and using PROGMEM to force the compiler to read directly from flash.
+  // However, the latency of such reads might be too long.
   Serial << F("Computing wave LUT: \n");
   unsigned long ms = millis();
   for(int i=0; i<NUM_WAVE_SAMPLES; i++)
@@ -367,7 +366,7 @@ void setup(){
   if(PWM_FAST_FLAG) Serial << F("Initializing fast PWM on timer 1.\n");
   else              Serial << F("Initializing phase/frequency correct PWM on timer 1.\n");
   unsigned int pwmFreq = SetupTimer1(PWM_MAXVAL, PWM_FAST_FLAG);
-  Serial << F("PWM Freq: ") << pwmFreq << F(" Hz; Max PWM value: ") << PWM_MAXVAL << F("\n");   
+  Serial << F("PWM Freq: ") << pwmFreq << F(" Hz; Max PWM value: ") << PWM_MAXVAL << F("\n");
 
   Serial << F("Initializing waveform interrupt on timer 2.\n");
   g_interruptFreq = SetupTimer2(INTERRUPT_FREQ);
@@ -378,13 +377,11 @@ void setup(){
 
   // Set defaults
   Serial << F("Setting default waveform.\n");
-  //setupWave(i, 2.0, 1.0, {1 -1 -1 1 -1 -1}, NULL);
   float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++)
     setupWave(i, 0.0, 0.0, amp);
   setAllMeans(0.5);
   applyMeans();
-  //for(int i=0; i<NUM_CHANNELS; i++) setOutput(i, (unsigned int)val[0]);
   setupEnvelope(3.0, 0.2);
 
   // Attach the callback function to the Messenger
@@ -395,7 +392,7 @@ void setup(){
 }
 
 void loop(){
-  // The following line is the most effective way of using Serial and Messenger's callback
+  // The most effective way of using Serial and Messenger's callback:
   while ( Serial.available() )  message.process(Serial.read () );
 }
 
@@ -669,7 +666,10 @@ void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals)
   
   for(ch=0; ch<NUM_CHANNELS; ch++) 
     vals[ch] = g_mean[ch]+0.5;
-  
+
+  // *** WORK HERE: the loops below can probably be optimized. E.g., we don't need
+  // to clamp to the proper output range on each iteration.
+
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
   for(wv=0; wv<NUM_WAVES; wv++){
     unsigned int sineIndex = (unsigned long int)((sineInc[wv]*curTics+0.5)+phase[wv])%NUM_WAVE_SAMPLES;
@@ -755,6 +755,7 @@ void setCurrents(){
   bool err = false;
   byte i;
   
+  // *** FIX ME: we should set all 6 channels!
   eeprom_read_block((void*)cur, (const void*)gee_currents, NUM_CHANNELS);
   for(i=0; i<NUM_CHANNELS; i++)
     if(cur[i]>127){
