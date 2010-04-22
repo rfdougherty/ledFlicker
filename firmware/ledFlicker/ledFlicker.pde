@@ -137,6 +137,9 @@ static float g_mean[NUM_CHANNELS];
 static float sineInc[NUM_WAVES];
 unsigned int phase[NUM_WAVES];
 
+// The colorspace to use
+static char g_colorSpace;
+
 //
 // Define EEPROM variables for static configuration vars
 //
@@ -203,7 +206,12 @@ void messageReady() {
       Serial << F("    dump the specified wavform. (Dumps a lot of data to your serial port!\n\n");
       Serial << F("[l,m11,m12,m13,m21,m22,m23,m31,m32,m33]\n");
       Serial << F("    set the rgb2lms color transform matrix. Note the element order is row1, row2, row3.\n");
-      Serial << F("    The lms2rgb matrix is also used, but it will be computed internally.\n");      
+      Serial << F("    The lms2rgb matrix is also used, but it will be computed internally.\n");
+      Serial << F("    Call this command with no args to see the current values.\n");      
+      Serial << F("[x,l|r]\n");
+      Serial << F("    set the color space transform to be used for subsequent commands. Currently supported\n");    
+      Serial << F("    spaces are 'c' (human cone space) and 'n' (native LED reg,green,blue space). This will\n");
+      Serial << F("    default to rgb when the firmware boots.\n");      
       Serial << F("For example:\n");
       Serial << F("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]\n\n");
       break;
@@ -326,10 +334,21 @@ void messageReady() {
 
     case 'l': // Set lms2rgb color transform
       while(message.available()) val[i++] = message.readFloat();
-      if(i<9){
+      if(i==0){
+        dumpLmsMatrix();
+      }else if(i<9){
         Serial << F("rgb2lms requires 9 values!\n");
       }else{
         setLmsMatrix(val);
+      }
+      break;
+
+    case 'x': // Set the current color spacem
+      while(message.available()) val[i++] = message.readChar();
+      if(i<1){
+        Serial << F("color space Xform requires the color space code to be set!\n");
+      }else{
+        setColorSpace((char)val[0]);
       }
       break;
 
@@ -383,6 +402,9 @@ void setup(){
   setAllMeans(0.5);
   applyMeans();
   setupEnvelope(3.0, 0.2);
+  
+  Serial << F("Setting colorspace to native RGB. Use 'x' command to change it.\n");
+  setColorSpace('n');
 
   // Attach the callback function to the Messenger
   message.attach(messageReady);
@@ -566,7 +588,9 @@ void setupWave(byte wvNum, float freq, float ph, float *amp){
   // Amplitude is -1 to 1 (negative inverts phase)
   if(amp!=NULL){
     // *** WORK HERE!
-    lmsToRgb(amp, g_mean);
+    if(g_colorSpace=='c')
+      lmsToRgb(amp, g_mean);
+    // We do nothing for native ('n') colorspace.
     for(i=0; i<NUM_CHANNELS; i++)
       amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
   }else{
@@ -797,27 +821,39 @@ void setLmsMatrix(float rgb2lms[]){
   if(rgb2lms!=NULL)
     eeprom_write_block((void*)rgb2lms, (void*)gee_rgb2lms, 9*sizeof(float));
   eeprom_read_block((void*)g_rgb2lms, (const void*)gee_rgb2lms, 9*sizeof(float));
+  invertColor(g_rgb2lms, g_lms2rgb); 
+}
+
+void dumpLmsMatrix(){
   Serial << F("rgb2lms: [ ") << g_rgb2lms[0] << F(",") << g_rgb2lms[1] << F(",") << g_rgb2lms[2] << F("\n");
   Serial << F("           ") << g_rgb2lms[3] << F(",") << g_rgb2lms[4] << F(",") << g_rgb2lms[5] << F("\n");
   Serial << F("           ") << g_rgb2lms[6] << F(",") << g_rgb2lms[7] << F(",") << g_rgb2lms[8] << F(" ]\n"); 
-  invertColor(g_rgb2lms, g_lms2rgb); 
   Serial << F("lms2rgb: [ ") << g_lms2rgb[0] << F(",") << g_lms2rgb[1] << F(",") << g_lms2rgb[2] << F("\n");
   Serial << F("           ") << g_lms2rgb[3] << F(",") << g_lms2rgb[4] << F(",") << g_lms2rgb[5] << F("\n");
   Serial << F("           ") << g_lms2rgb[6] << F(",") << g_lms2rgb[7] << F(",") << g_lms2rgb[8] << F(" ]\n");
 }
 
+byte setColorSpace(char colorSpaceCode){
+  if(colorSpaceCode!='n'&&colorSpaceCode!='c'){
+    Serial << F("SetColorSpace: Invalid code: '") << colorSpaceCode << F("'\n");
+    return(1);
+  }else{
+    g_colorSpace = colorSpaceCode;
+  }
+}
+
 void lmsToRgb(float stim[], float backRgbInt[]){
+  // Make sure the global xform matrices are up-to-date:
   setLmsMatrix(NULL);
   // *** FIX ME:
   float backRgb[3] = {0.5,0.5,0.5};
-  Serial << F("lms: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
-  float scale = 1.0;
+  //Serial << F("lms: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
   float backLms[3];
   xformColor(backRgb, g_rgb2lms, backLms);
   float scaledStimLMS[3];
-  scaledStimLMS[0] = stim[0]*backLms[0];
-  scaledStimLMS[1] = stim[1]*backLms[1];
-  scaledStimLMS[2] = stim[2]*backLms[2];
+  scaledStimLMS[0] = 2.0*stim[0]*backLms[0];
+  scaledStimLMS[1] = 2.0*stim[1]*backLms[1];
+  scaledStimLMS[2] = 2.0*stim[2]*backLms[2];
   // stim is transformed in-place
   xformColor(scaledStimLMS, g_lms2rgb, stim);
   // scale by the max so that it is physically realizable
