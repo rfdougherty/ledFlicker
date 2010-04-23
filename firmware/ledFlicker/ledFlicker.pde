@@ -66,6 +66,8 @@
   #define PIN_SHIFTCLOCK 6
   #define NUM_WAVE_SAMPLES 600
   #define NUM_ENV_SAMPLES 60
+  // NUM_CHANNELS should be either 2 or 6. Values >6 almost certainly won't work.
+  // Values <6 should work, but only 2 and 6 have been tested.
   #define NUM_CHANNELS 6
 #else
   #define PIN_LED1 9
@@ -159,7 +161,11 @@ Messenger g_message = Messenger(',','[',']');
 
 // Instantiate LedShift object
 // This is only used in setCurrents, but we get a weird compiler error when we put it in there.
-LedShift g_shift = LedShift(PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
+#if NUM_CHANNELS>3
+  LedShift g_shift = LedShift(1, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
+#else
+  LedShift g_shift = LedShift(2, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
+#endif
 
 // Create the Message callback function. This function is called whener a complete 
 // message is received on the serial port.
@@ -178,42 +184,43 @@ void messageReady() {
       Serial << F("(defined below), followed by some parameters. Parameters are separated by a comma.\n\n");
       Serial << F("Commands (optional params are enclosed in parens with default value):\n\n");
       Serial << F("[?]\n");
-      Serial << F("    help (displays this text).\n");
+      Serial << F("    Help (displays this text).\n");
       Serial << F("[m"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",val") << i; } Serial << F("]\n");
-      Serial << F("    set the mean outputs (0 - 1.0) for all channels.\n");
+      Serial << F("    Set the mean outputs (0 - 1.0) for all channels.\n");
       Serial << F("[e,duration,riseFall]\n");
-      Serial << F("    set the envelope duration and rise/fall times (in seconds).\n");
-      Serial << F("[w,channel,frequency,amplitude,(phase=0),(mean=0.5)]\n");
-      Serial << F("    set waveform params for the specified channel.\n");
+      Serial << F("    Set the envelope duration and rise/fall times (in seconds).\n");
+      Serial << F("[w,waveNum,frequency,amplitude,(phase=0),(mean=0.5)]\n");
+      Serial << F("    Set waveform parameters for the specified waveform number (up to ") << NUM_WAVES << F("). Setting a\n");
+      Serial << F("    waveform takes about half a millisecond for transformed color space; much less for native space.\n");      
       Serial << F("[p]\n");
-      Serial << F("    play the waveforms.\n");
+      Serial << F("    Play the waveforms.\n");
       Serial << F("[h]\n");
-      Serial << F("    halt waveform playout.\n");
+      Serial << F("    Halt waveform playout.\n");
       Serial << F("[s]\n");
-      Serial << F("    status. Returns the time remaining for current playout (0 if no playout).\n");
+      Serial << F("    Status. Returns the time remaining for current playout (0 if no playout).\n");
       Serial << F("[i]\n");
-      Serial << F("    set the interrupt frequency that controls waveform sample rate (100 - 5000).\n");
+      Serial << F("    Set the interrupt frequency that controls waveform sample rate (100 - 5000).\n");
       Serial << F("    A higher frequency will give better fidelity for high frequency wavforms. However, the maximum\n");
       Serial << F("    rate is limited by the complexity of the waveform code. If you set this value too high, the CPU\n");
       Serial << F("    spends all its time servicing the interrupt, effectively locking it up. \n");
-      Serial << F("[c,chan1MaxValue,chan2MaxValue,chan3MaxValue]\n");
-      Serial << F("    set the maximum current output for three channels. This assumes that you have an\n");
-      Serial << F("    Allegro A6280 constant current source driving the LEDs and that it is connected top pins\n");
+      Serial << F("[c"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",max") << i; } Serial << F("]\n");
+      Serial << F("    Set the maximum current output for each channel and store them in EEPROM. This assumes the\n");
+      Serial << F("    Allegro A6280 constant current source is driving the LEDs and that it is connected to pins\n");
       Serial << F("    5 (data, SDI), 6 (latch, LI), 7 (enable, OEI), and 8 (clock, CI).\n"); 
-      Serial << F("[v,channel]\n");
-      Serial << F("    validate the specified waveform. Prints some intenral variables and waveform stats.\n");
-      Serial << F("[d,channel]\n");
-      Serial << F("    dump the specified wavform. (Dumps a lot of data to your serial port!\n\n");
+      Serial << F("[v,waveNum]\n");
+      Serial << F("    Validate the specified waveform. Prints some intenral variables and waveform stats.\n");
+      Serial << F("[d,waveNum]\n");
+      Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n");
       Serial << F("[l,m11,m12,m13,m21,m22,m23,m31,m32,m33]\n");
-      Serial << F("    set the rgb2lms color transform matrix. Note the element order is row1, row2, row3.\n");
-      Serial << F("    The lms2rgb matrix is also used, but it will be computed internally.\n");
-      Serial << F("    Call this command with no args to see the current values.\n");      
+      Serial << F("    Set the rgb2lms color transform matrix and store it in EEPROM. Matrix order is row1, row2, row3.\n");
+      Serial << F("    The lms2rgb matrix is also used and is computed internally. Call this with no args to see the \n");
+      Serial << F("    transform matrices that are currently stored in EEPROM.\n");      
       Serial << F("[x,l|r]\n");
-      Serial << F("    set the color space transform to be used for subsequent commands. Currently supported\n");    
+      Serial << F("    Set the color space transform to be used for subsequent commands. Currently supported\n");    
       Serial << F("    spaces are 'c' (human cone space) and 'n' (native LED reg,green,blue space). This will\n");
-      Serial << F("    default to rgb when the firmware boots.\n");      
+      Serial << F("    always default to rgb when the firmware boots.\n");      
       Serial << F("For example:\n");
-      Serial << F("[e,10,0.2][w,0,2,1,0][w,1,2,1,0.334][w,2,2,1,0.667][p]\n\n");
+      Serial << F("[x,c][e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
       break;
       
     case 'm': // Set mean outputs
@@ -246,8 +253,7 @@ void messageReady() {
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
         Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
-      }
-      else{
+      }else{
         stopISR();
         // setup the waveform. params are: wave num, freq, phase, amp[]
         if(val[0]>=0&&val[0]<NUM_WAVES){
@@ -397,22 +403,21 @@ void setup(){
   Serial << F("Setting color transform matrices from stored calibration data.\n");
   setLmsMatrix(NULL);
 
+  Serial << F("Colorspace is set to native RGB. Use the 'x' command to change it.\n");
+  setColorSpace('n');
+    
   // Set waveform defaults
-  Serial << F("Setting default waveform.\n");
+  Serial << F("Initializing all waveforms to zero amplitude.");
   float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
-  for(int i=0; i<NUM_WAVES; i++)
-    setupWave(i, 0.0, 0.0, amp);
+  for(int i=0; i<NUM_WAVES; i++) setupWave(i, 0.0, 0.0, amp);
   setAllMeans(0.5);
   applyMeans();
   setupEnvelope(3.0, 0.2);
-  
-  Serial << F("Setting colorspace to native RGB. Use 'x' command to change it.\n");
-  setColorSpace('n');
 
   // Attach the callback function to the Messenger
   g_message.attach(messageReady);
   
-  Serial << F("ledFlicker Ready.\n");
+  Serial << F("ledFlicker Ready. Send the ? command ([?]) for help.\n");
   Serial << F("There are ") << g_message.FreeMemory() << F(" bytes of RAM free.\n\n");
 }
 
@@ -788,26 +793,28 @@ void saveCurrents(float *newCurrents){
 }
 
 void setCurrents(){
-  byte cur[NUM_CHANNELS];
+  // Note: we only support up to 6 channels (2 shift register chips)
+  byte cur[6];
   bool err = false;
   byte i;
   
-  // *** FIX ME: we should set all 6 channels!
   eeprom_read_block((void*)cur, (const void*)gee_currents, NUM_CHANNELS);
-  for(i=0; i<NUM_CHANNELS; i++)
+  for(i=0; i<NUM_CHANNELS; i++){
     if(cur[i]>127){
       err = true;
       break;
     }
-  if(err){
-    for(i=0; i<NUM_CHANNELS; i++) cur[i] = 64;
-    Serial << F("Corrupt current spec in EEPROM- using defaults.\n");
   }
-  g_shift.SetCurrents(cur[0], cur[1], cur[2]);
+  if(err){
+    for(i=0; i<6; i++) cur[i] = 64;
+    Serial << F("Corrupt current spec in EEPROM- using defaults.\n");
+  }else if(NUM_CHANNELS<6){
+    for(i=NUM_CHANNELS; i<6; i++) cur[i] = 0;
+  }
+  g_shift.SetCurrents(cur);
   Serial << F("Current command packet sent: \n"); 
-  Serial << F("   Red: ") << (int)cur[0] << F(" = ") << g_shift.GetCurrentPercent(cur[0]) << F("%\n");
-  Serial << F(" Green: ") << (int)cur[1] << F(" = ") << g_shift.GetCurrentPercent(cur[1]) << F("%\n");
-  Serial << F("  Blue: ") << (int)cur[2] << F(" = ") << g_shift.GetCurrentPercent(cur[2]) << F("%\n");
+  for(i=0; i<NUM_CHANNELS; i++)
+    Serial << F("Channel ") << (int)i << F(": ") << (int)cur[i] << F(" = ") << g_shift.GetCurrentPercent(cur[i]) << F("%\n");
 }
 
 void invertColorMatrix(float A[], float iA[]){

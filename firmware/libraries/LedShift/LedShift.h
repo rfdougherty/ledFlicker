@@ -43,20 +43,20 @@ class LedShift{
 
 public:
   //LedShift();
-  LedShift(uint8_t dataPin, uint8_t latchPin, uint8_t enablePin, uint8_t clockPin);
-  
-  long unsigned int BuildColorPacket(unsigned int red, unsigned int green, unsigned int blue);
-  long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue);
-  long unsigned int BuildCommandPacket(uint8_t red, uint8_t green, uint8_t blue, uint8_t clockMode);
-  void SetColorPacket(unsigned int red, unsigned int green, unsigned int blue);
-  void SendPacket(long unsigned int dp);
+  LedShift(uint8_t nRegs, uint8_t dataPin, uint8_t latchPin, uint8_t enablePin, uint8_t clockPin);
+  ~LedShift();
+
+  void SetCommandPacket(uint8_t regNum, uint8_t red, uint8_t green, uint8_t blue);
+  void SetCommandPacket(uint8_t regNum, uint8_t red, uint8_t green, uint8_t blue, uint8_t clockMode);
+  void SetCommandPacket(uint8_t currents[]);
+  void SetColorPacket(uint8_t regNum, unsigned int red, unsigned int green, unsigned int blue);
   void SendPacket();
-  void SendABit(unsigned char bitNum);
+  void SendABit(uint8_t regNum, uint8_t bitNum);
   void Latch();
   void Enable();
   void Disable();
   
-  void SetCurrents(uint8_t red, uint8_t green, uint8_t blue);
+  void SetCurrents(uint8_t currents[]);
   float GetCurrentPercent(uint8_t currentByte);
   
   
@@ -72,7 +72,8 @@ private:
   volatile uint8_t *clockReg;
   uint8_t clockBit;
 
-  dataPacket curDataPacket;
+  uint8_t numRegisters;
+  dataPacket *curDataPacket;
 };
 
 #endif
