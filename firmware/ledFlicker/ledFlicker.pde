@@ -54,26 +54,26 @@
 // F_CPU and __AVR_ATmega1280__ are defined for us by the arduino environment
 
 #ifdef __AVR_ATmega1280__
-  #define led1Pin 11
-  #define led2Pin 12
-  #define led3Pin 13
-  #define led4Pin 2
-  #define led5Pin 3
-  #define led6Pin 5
-  #define shiftDataPin 8
-  #define shiftLatchPin 7
-  #define shiftEnablePin 9
-  #define shiftClockPin 6
+  #define PIN_LED1 11
+  #define PIN_LED2 12
+  #define PIN_LED3 13
+  #define PIN_LED4 2
+  #define PIN_LED5 3
+  #define PIN_LED6 5
+  #define PIN_SHIFTDATA 8
+  #define PIN_SHIFTLATCH 7
+  #define PIN_SHIFTENABLE 9
+  #define PIN_SHIFTCLOCK 6
   #define NUM_WAVE_SAMPLES 600
   #define NUM_ENV_SAMPLES 60
   #define NUM_CHANNELS 6
 #else
-  #define led1Pin 9
-  #define led2Pin 10
-  #define shiftDataPin 8
-  #define shiftLatchPin 7
-  #define shiftEnablePin 6
-  #define shiftClockPin 5
+  #define PIN_LED1 9
+  #define PIN_LED2 10
+  #define PIN_SHIFTDATA 8
+  #define PIN_SHIFTLATCH 7
+  #define PIN_SHIFTENABLE 6
+  #define PIN_SHIFTCLOCK 5
   #define NUM_WAVE_SAMPLES 200
   #define NUM_ENV_SAMPLES 30
   #define NUM_CHANNELS 2
@@ -132,10 +132,10 @@ static unsigned int g_envelopeDwell;
 
 volatile unsigned int g_envelopeTics;
 
-static float amplitude[NUM_CHANNELS*NUM_WAVES];
+static float g_amplitude[NUM_CHANNELS*NUM_WAVES];
 static float g_mean[NUM_CHANNELS];
-static float sineInc[NUM_WAVES];
-unsigned int phase[NUM_WAVES];
+static float g_sineInc[NUM_WAVES];
+unsigned int g_phase[NUM_WAVES];
 
 // The colorspace to use
 static char g_colorSpace;
@@ -155,21 +155,21 @@ float g_rgb2lms[9];
 float g_lms2rgb[9];
 
 // Instantiate Messenger object
-Messenger message = Messenger(',','[',']'); 
+Messenger g_message = Messenger(',','[',']'); 
 
 // Instantiate LedShift object
 // This is only used in setCurrents, but we get a weird compiler error when we put it in there.
-LedShift shift = LedShift(shiftDataPin, shiftLatchPin, shiftEnablePin, shiftClockPin);
+LedShift g_shift = LedShift(PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
 
 // Create the Message callback function. This function is called whener a complete 
 // message is received on the serial port.
 void messageReady() {
-  message.echoBuffer();
+  //g_message.echoBuffer();
   float val[max(2*NUM_CHANNELS,12)];
   int i = 0;
-  if(message.available()) {
+  if(g_message.available()) {
     // get the command byte
-    char command = message.readChar();
+    char command = g_message.readChar();
     switch(command) {
     
     case '?': // display help text
@@ -217,7 +217,7 @@ void messageReady() {
       break;
       
     case 'm': // Set mean outputs
-      while(message.available()) val[i++] = message.readFloat();
+      while(g_message.available()) val[i++] = g_message.readFloat();
       if(i!=1 && i!=NUM_CHANNELS){
         Serial << F("set outputs requires one param or ") << NUM_CHANNELS << F(" params.\n");
       }else{
@@ -233,7 +233,7 @@ void messageReady() {
       break;
       
     case 'e': // Set envelope params
-      while(message.available()) val[i++] = message.readFloat();
+      while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<2) Serial << F("ERROR: envelope setup requires 2 parameters.\n");
       else{
         stopISR();
@@ -243,7 +243,7 @@ void messageReady() {
       break;
 
     case 'w': // setup waveforms
-      while(message.available()) val[i++] = message.readFloat();
+      while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
         Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
       }
@@ -262,7 +262,7 @@ void messageReady() {
     case 'p': // play waveforms
       // Reset state variables
       g_envelopeTics = 0;
-      // NOTE: sineInc is not reset here. So, you must call setupWave before playing.
+      // NOTE: g_sineInc is not reset here. So, you must call setupWave before playing.
       startISR();
       break;
 
@@ -277,9 +277,9 @@ void messageReady() {
       break;
       
     case 'i': // set interrupt frequency
-      if(message.available()){
+      if(g_message.available()){
         stopISR();
-        val[0] = message.readInt();
+        val[0] = g_message.readInt();
         if(val[0]<100||val[0]>6000)
           Serial << F("ERROR: interrupt frequency must be >=100 and <=6000.\n");
         else{
@@ -291,7 +291,7 @@ void messageReady() {
       break;
 
     case 'c': // Set LED max currents on A6280 constant current source chip
-      while(message.available()) val[i++] = message.readInt();
+      while(g_message.available()) val[i++] = g_message.readInt();
       if(i<NUM_CHANNELS){
         Serial << F("LED current requires ") << NUM_CHANNELS << F(" parameters.\n");
       }else{
@@ -309,12 +309,12 @@ void messageReady() {
       break;
 
     case 'v':
-      if(message.available()){
-        val[0] = message.readInt();
+      if(g_message.available()){
+        val[0] = g_message.readInt();
         stopISR();
-        Serial << F("amplitude: ") << amplitude[(unsigned int)val[0]] << F("\n");
+        Serial << F("amplitude: ") << g_amplitude[(unsigned int)val[0]] << F("\n");
         Serial << F("mean: ") << g_mean[(unsigned int)val[0]] << F("\n");
-        Serial << F("sineInc: ") << sineInc[(unsigned int)val[0]] << F("\n");
+        Serial << F("sineInc: ") << g_sineInc[(unsigned int)val[0]] << F("\n");
         Serial << F("envTicsDuration: ") << g_envelopeTicsDuration << F("\n");
         Serial << F("envelopeStartEnd: ")<< g_envelopeStartEnd << F("\n");
         Serial << F("envelopeEndStart: ") << g_envelopeEndStart << F("\n");
@@ -324,16 +324,16 @@ void messageReady() {
       break;
 
     case 'd':
-      if(message.available()){
+      if(g_message.available()){
         stopISR();
-        val[0] = message.readInt();
+        val[0] = g_message.readInt();
         dumpWave((byte)val[0]);
       }
       else Serial << F("ERROR: dump command requires a channel parameter.\n");
       break;
 
     case 'l': // Set lms2rgb color transform
-      while(message.available()) val[i++] = message.readFloat();
+      while(g_message.available()) val[i++] = g_message.readFloat();
       if(i==0){
         dumpLmsMatrix();
       }else if(i<9){
@@ -344,7 +344,7 @@ void messageReady() {
       break;
 
     case 'x': // Set the current color spacem
-      while(message.available()) val[i++] = message.readChar();
+      while(g_message.available()) val[i++] = g_message.readChar();
       if(i<1){
         Serial << F("color space Xform requires the color space code to be set!\n");
       }else{
@@ -393,8 +393,11 @@ void setup(){
   
   Serial << F("Configuring constant current source shift registers.\n");
   setCurrents();
+  
+  Serial << F("Setting color transform matrices from stored calibration data.\n");
+  setLmsMatrix(NULL);
 
-  // Set defaults
+  // Set waveform defaults
   Serial << F("Setting default waveform.\n");
   float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++)
@@ -407,15 +410,15 @@ void setup(){
   setColorSpace('n');
 
   // Attach the callback function to the Messenger
-  message.attach(messageReady);
+  g_message.attach(messageReady);
   
   Serial << F("ledFlicker Ready.\n");
-  Serial << F("freeMemory() reports ") << message.FreeMemory() << F(" bytes free.\n\n");
+  Serial << F("There are ") << g_message.FreeMemory() << F(" bytes of RAM free.\n\n");
 }
 
 void loop(){
   // The most effective way of using Serial and Messenger's callback:
-  while ( Serial.available() )  message.process(Serial.read () );
+  while ( Serial.available() )  g_message.process(Serial.read () );
 }
 
 
@@ -447,15 +450,15 @@ unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
   ICR1 = topVal;
 
   // Make sure all our pins are set for pwm
-  pinMode(led1Pin, OUTPUT);
-  pinMode(led2Pin, OUTPUT);
+  pinMode(PIN_LED1, OUTPUT);
+  pinMode(PIN_LED2, OUTPUT);
   TCCR1A |= (1 << COM1A1); 
   TCCR1A &= ~(1 << COM1A0); 
   TCCR1A |=  (1 << COM1B1); 
   TCCR1A &= ~(1 << COM1B0);   
 #if NUM_CHANNELS > 2
   // For arduino mega, we can use 4 more outputs
-  pinMode(led3Pin, OUTPUT);
+  pinMode(PIN_LED3, OUTPUT);
   TCCR1A |=  (1 << COM1C1); 
   TCCR1A &= ~(1 << COM1C0);
   
@@ -474,9 +477,9 @@ unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
     TCCR3A &= ~(1 << WGM30);
   }
   ICR3 = topVal;
-  pinMode(led4Pin, OUTPUT);
-  pinMode(led5Pin, OUTPUT);
-  pinMode(led6Pin, OUTPUT);
+  pinMode(PIN_LED4, OUTPUT);
+  pinMode(PIN_LED5, OUTPUT);
+  pinMode(PIN_LED6, OUTPUT);
   TCCR3A |=  (1 << COM3A1); 
   TCCR3A &= ~(1 << COM3A0); 
   TCCR3A |=  (1 << COM3B1); 
@@ -584,22 +587,32 @@ void setupWave(byte wvNum, float freq, float ph, float *amp){
   byte i;
   
   // Phase comes in as a relative value (0-1); convert to the index offset.
-  phase[wvNum] = ph*maxWaveIndex;
+  g_phase[wvNum] = ph*maxWaveIndex;
   // Amplitude is -1 to 1 (negative inverts phase)
   if(amp!=NULL){
-    // *** WORK HERE!
-    if(g_colorSpace=='c')
-      lmsToRgb(amp, g_mean);
-    // We do nothing for native ('n') colorspace.
+    if(g_colorSpace=='c'){
+      // *** TODO: we can save some calcs here if we cache the backLMS values that get computed in lmsToRgb.
+      float backRgb[3];
+      if(NUM_CHANNELS>=3){
+        for(i=0;i<3;i++) backRgb[i] = g_mean[i]/PWM_MAXVAL;
+        lmsToRgb(&(amp[0]), backRgb);
+      }
+      if(NUM_CHANNELS>=6){
+        for(i=0;i<3;i++) backRgb[i] = g_mean[i+3]/PWM_MAXVAL;
+        lmsToRgb(&(amp[3]), backRgb);  
+      }    
+    }
+    // Note that we do nothing for native ('n') colorspace.
+    // Now set the amplitudes in the global
     for(i=0; i<NUM_CHANNELS; i++)
-      amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
+      g_amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
   }else{
     for(i=0; i<NUM_CHANNELS; i++)
-      amplitude[wvNum*NUM_CHANNELS+i] = 0.0;
+      g_amplitude[wvNum*NUM_CHANNELS+i] = 0.0;
   }
   // the incremetor determines the output freq.
   // Wew scale by NUM_WAVE_SAMPLES/g_interruptFreq to convert freq in Hz to the incremeter value.
-  sineInc[wvNum] = freq*NUM_WAVE_SAMPLES/g_interruptFreq;
+  g_sineInc[wvNum] = freq*NUM_WAVE_SAMPLES/g_interruptFreq;
 }
 
 void setOutput(byte chan, unsigned int val){
@@ -630,10 +643,8 @@ void setOutput(byte chan, unsigned int val){
 }
 
 void setAllMeans(float val){
-  if(val<0.0)      val = 0.0;
-  else if(val>1.0) val = 1.0;
   for(byte i=0; i<NUM_CHANNELS; i++)
-    g_mean[i] = val*PWM_MAXVAL;
+    setMean(i,val);
 }
 
 void setMean(byte chan, float val){
@@ -688,6 +699,8 @@ unsigned int getEnvelopeIndex(unsigned int curTics){
 void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals){
   byte wv, ch, ampInd;
   
+  // Initialize each channel to the mean value, plus 0.5. The +0.5 is to do a proper rounding
+  // when we convert from float to int below.
   for(ch=0; ch<NUM_CHANNELS; ch++) 
     vals[ch] = g_mean[ch]+0.5;
 
@@ -696,11 +709,11 @@ void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals)
 
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
   for(wv=0; wv<NUM_WAVES; wv++){
-    unsigned int sineIndex = (unsigned long int)((sineInc[wv]*curTics+0.5)+phase[wv])%NUM_WAVE_SAMPLES;
+    unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
     float envSine = g_envelope[envIndex]*g_sineWave[sineIndex];
     for(ch=0; ch<NUM_CHANNELS; ch++){
       ampInd = wv*NUM_CHANNELS+ch;
-      vals[ch] += (unsigned int)(envSine*amplitude[ampInd]);
+      vals[ch] += (unsigned int)(envSine*g_amplitude[ampInd]);
       if(vals[ch]<0) vals[ch] = 0;
       else if(vals[ch]>PWM_MAXVAL) vals[ch] = PWM_MAXVAL;
     }
@@ -738,7 +751,7 @@ void dumpWave(byte chan){
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
 ISR(TIMER2_COMPA_vect) {
-  //shift.Enable(); // We can use the enable pin to test ISR timing
+  //g_shift.Enable(); // We can use the enable pin to test ISR timing
   static unsigned int envInd;
   static byte i;
   unsigned int val[NUM_CHANNELS];
@@ -764,7 +777,7 @@ ISR(TIMER2_COMPA_vect) {
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
   
-  //shift.Disable(); // We can use the enable pin to test ISR timing
+  //g_shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
 void saveCurrents(float *newCurrents){
@@ -790,14 +803,14 @@ void setCurrents(){
     for(i=0; i<NUM_CHANNELS; i++) cur[i] = 64;
     Serial << F("Corrupt current spec in EEPROM- using defaults.\n");
   }
-  shift.SetCurrents(cur[0], cur[1], cur[2]);
+  g_shift.SetCurrents(cur[0], cur[1], cur[2]);
   Serial << F("Current command packet sent: \n"); 
-  Serial << F("   Red: ") << (int)cur[0] << F(" = ") << shift.GetCurrentPercent(cur[0]) << F("%\n");
-  Serial << F(" Green: ") << (int)cur[1] << F(" = ") << shift.GetCurrentPercent(cur[1]) << F("%\n");
-  Serial << F("  Blue: ") << (int)cur[2] << F(" = ") << shift.GetCurrentPercent(cur[2]) << F("%\n");
+  Serial << F("   Red: ") << (int)cur[0] << F(" = ") << g_shift.GetCurrentPercent(cur[0]) << F("%\n");
+  Serial << F(" Green: ") << (int)cur[1] << F(" = ") << g_shift.GetCurrentPercent(cur[1]) << F("%\n");
+  Serial << F("  Blue: ") << (int)cur[2] << F(" = ") << g_shift.GetCurrentPercent(cur[2]) << F("%\n");
 }
 
-void invertColor(float A[], float iA[]){
+void invertColorMatrix(float A[], float iA[]){
   // Quick-n-dirty 3x3 matrix inverse.
   // To do: check precision error (e.g., large determinant)
   float determinant = +A[0]*(A[4]*A[8]-A[7]*A[5])
@@ -821,7 +834,7 @@ void setLmsMatrix(float rgb2lms[]){
   if(rgb2lms!=NULL)
     eeprom_write_block((void*)rgb2lms, (void*)gee_rgb2lms, 9*sizeof(float));
   eeprom_read_block((void*)g_rgb2lms, (const void*)gee_rgb2lms, 9*sizeof(float));
-  invertColor(g_rgb2lms, g_lms2rgb); 
+  invertColorMatrix(g_rgb2lms, g_lms2rgb); 
 }
 
 void dumpLmsMatrix(){
@@ -842,11 +855,7 @@ byte setColorSpace(char colorSpaceCode){
   }
 }
 
-void lmsToRgb(float stim[], float backRgbInt[]){
-  // Make sure the global xform matrices are up-to-date:
-  setLmsMatrix(NULL);
-  // *** FIX ME:
-  float backRgb[3] = {0.5,0.5,0.5};
+void lmsToRgb(float stim[], float backRgb[]){
   //Serial << F("lms: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
   float backLms[3];
   xformColor(backRgb, g_rgb2lms, backLms);
@@ -854,7 +863,7 @@ void lmsToRgb(float stim[], float backRgbInt[]){
   scaledStimLMS[0] = 2.0*stim[0]*backLms[0];
   scaledStimLMS[1] = 2.0*stim[1]*backLms[1];
   scaledStimLMS[2] = 2.0*stim[2]*backLms[2];
-  // stim is transformed in-place
+  // Note that stim is transformed in-place
   xformColor(scaledStimLMS, g_lms2rgb, stim);
   // scale by the max so that it is physically realizable
   float maxVal = 0;
@@ -863,13 +872,19 @@ void lmsToRgb(float stim[], float backRgbInt[]){
     if(tmp>maxVal) maxVal = tmp;
   }
   if(maxVal>1){
-    Serial << F("rgb exceeds max!\n");
+    Serial << F("rgb exceeds max! Scaling to fit within gamut:\n");
+    stim[0] = stim[0]/maxVal;
+    stim[1] = stim[1]/maxVal;
+    stim[2] = stim[2]/maxVal;
+    Serial << F("rgb: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
+    float lms[3]; 
+    xformColor(stim, g_rgb2lms, lms);
+    for(int i=0;i<3;i++) lms[i] = lms[i] / backLms[i] / 2.0;
+    Serial << F("Actual lms: [ ") << lms[0] << F(",") << lms[1] << F(",") << lms[2] << F(" ]\n");
   }
-  Serial << F("rgb: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
   //stimRGB = stimRGB/abs(stimRGB).max()*scale;
   // compute the actual LMS contrast
   //float actualLMS[3]; actualLMS = xformColor(stimRGB, g_rgb2lms, actualLMS) / backLms / 2.0;
-  
 }
 
 void xformColor(float vecIn[], float tm[], float vecOut[]){
