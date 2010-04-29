@@ -1,15 +1,16 @@
 function [params, SerialPort] = ArduinoDoScan(params, SerialPort)
-
-%% Get a serial port
-if notDefined('SerialPort')
-    try
-        % don't run this sentence twice otherwise you might have some probrems...
-        SerialPort = serial('/dev/tty.usbserial-A900ae4s','BaudRate',57600);
-    catch SomeError
-        disp(SomeError)
-        return
-    end
-end
+% 
+% Arduino Codes are written for controling to Arduino board, which gives us
+% precise temporal frequency of LED blinking. You can change any temporal
+% frequency flicker to modify parameters in ArduinoGetParams. If you have
+% saved parms file for ArduinoDoScan, you can run this code after loading
+% the matfile.
+%
+% [params, SerialPort] = ArduinoDoScan(params)
+% 
+% before running the code, please confirm the connection between USB port
+% and the Arduino board.
+% written by hh - April, 2010
 
 %%
 try
@@ -57,7 +58,16 @@ try
     fprintf('[%s]:Getting subjects responses from device #%d\n',mfilename,params.devices.keyInputExternal);
     fprintf('[%s]:Getting experimentor''s responses from device #%d\n',mfilename,params.devices.keyInputInternal);
     
-    
+    %% Get a serial port
+    if notDefined('SerialPort')
+        try
+            % don't run this sentence twice otherwise you might have some probrems...
+            SerialPort = serial('/dev/tty.usbserial-A900ae4s','BaudRate',57600);
+        catch SomeError
+            disp(SomeError)
+            return
+        end
+    end
     %% open the serial port
     fclose(SerialPort); % to avoid error
     fopen(SerialPort);
