@@ -8,7 +8,7 @@
  * brightness rapidly; the 81 has an internal oscillator for the PWM while
  * the 80 does not. 
  *
- * SOme of the code here was borrowed from http://www.pololu.com/catalog/product/1240.
+ * Some of the code here was borrowed from http://www.pololu.com/catalog/product/1240.
  * 
  * 2010.03.23 Bob Dougherty (bobd@stanford.edu)
  */
@@ -123,8 +123,8 @@ void LedShift::SendPacket(){
       }
     }
   }
- *latchReg |= latchBit;
- *latchReg &= ~latchBit;
+  *clockReg &= ~clockBit;
+  Latch();
 }
 
 void LedShift::SetCurrents(uint8_t currents[]){
@@ -161,6 +161,7 @@ float LedShift::GetCurrentPercent(uint8_t currentByte){
 }
 
 void LedShift::Latch(){
+   *latchReg |= latchBit;
    *latchReg |= latchBit;
    *latchReg &= ~latchBit;
 }

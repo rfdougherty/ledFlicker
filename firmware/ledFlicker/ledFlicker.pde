@@ -60,10 +60,10 @@
   #define PIN_LED4 2
   #define PIN_LED5 3
   #define PIN_LED6 5
-  #define PIN_SHIFTDATA 8
-  #define PIN_SHIFTLATCH 7
-  #define PIN_SHIFTENABLE 9
-  #define PIN_SHIFTCLOCK 6
+  #define PIN_SHIFTDATA 40
+  #define PIN_SHIFTLATCH 42
+  #define PIN_SHIFTENABLE 44
+  #define PIN_SHIFTCLOCK 46
   #define NUM_WAVE_SAMPLES 600
   #define NUM_ENV_SAMPLES 60
   // NUM_CHANNELS should be either 2 or 6. Values >6 almost certainly won't work.
@@ -162,9 +162,9 @@ Messenger g_message = Messenger(',','[',']');
 // Instantiate LedShift object
 // This is only used in setCurrents, but we get a weird compiler error when we put it in there.
 #if NUM_CHANNELS>3
-  LedShift g_shift = LedShift(1, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
-#else
   LedShift g_shift = LedShift(2, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
+#else
+  LedShift g_shift = LedShift(1, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
 #endif
 
 // Create the Message callback function. This function is called whener a complete 
