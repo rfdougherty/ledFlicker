@@ -2,7 +2,7 @@
  * ledFlicker sketch for Arduino.
  * 
  * 
- * Three-channel LED oscillator for visual experiments. 
+ * Six-channel LED oscillator for visual experiments. 
  * 
  *
  * Copyright 2010 Bob Dougherty.
@@ -19,14 +19,28 @@
  * You might have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ * TO DO:
+ *   - remove color transform code from here. With up to 6 primaries, it's just
+ *     too much to try to tackle in here. Instead, I think we should store the 
+ *     calibration data (emission spectra and luminances) in EEPROM and allow 
+ *     the user to get it out and compute their own color transforms.
+ *   - Add general-purpose commands to set/get some digital pins and ADC reads.
+ *     This would be useful for, e.g., interfacing with EEG or MR scanner.
+ *   - Keep track of the number of hours of service for the LEDs. This would be
+ *     helpful in keeping a good calibration schedule. (E.g., if you wanted to
+ *     calibrate every 10 hours of operation.)
  *
  * HISTORY:
  * 2010.03.19 Bob Dougherty (bobd@stanford.edu) finished a working version.
  * 2010.04.02 Bob Dougherty: Major overhaul to allow 6 channels on Arduino Mega.
  * I also changed the code to allow each waveform to play out on multiple channels.
+ * 2010.06.30 Bob: Major overhaul to the hardware design to support high-power 
+ * LEDs. We no longer use the Allegro A6280 for a constant current source, so
+ * I've elimated all the code related to the current adjustment. I've also removed
+ * support for non-mega Arduinos.
  */
 
-#define VERSION "0.4"
+#define VERSION "0.5"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -37,7 +51,6 @@
 // without using up precious RAM. (Using Flash saved us over 2Kb of RAM!)
 #include <Flash.h>
 #include <Messenger.h>
-#include <LedShift.h>
 
 
 // atmega 168  has  16k flash, 512 EEPROM, 1k RAM
@@ -52,35 +65,18 @@
 #define BAUD 57600
 
 // F_CPU and __AVR_ATmega1280__ are defined for us by the arduino environment
-
-#ifdef __AVR_ATmega1280__
-  #define PIN_LED1 11
-  #define PIN_LED2 12
-  #define PIN_LED3 13
-  #define PIN_LED4 2
-  #define PIN_LED5 3
-  #define PIN_LED6 5
-  #define PIN_SHIFTDATA 40
-  #define PIN_SHIFTLATCH 42
-  #define PIN_SHIFTENABLE 44
-  #define PIN_SHIFTCLOCK 46
-  #define NUM_WAVE_SAMPLES 600
-  #define NUM_ENV_SAMPLES 60
-  // NUM_CHANNELS should be either 2 or 6. Values >6 almost certainly won't work.
-  // Values <6 should work, but only 2 and 6 have been tested.
-  #define NUM_CHANNELS 6
-#else
-  #define PIN_LED1 9
-  #define PIN_LED2 10
-  #define PIN_SHIFTDATA 8
-  #define PIN_SHIFTLATCH 7
-  #define PIN_SHIFTENABLE 6
-  #define PIN_SHIFTCLOCK 5
-  #define NUM_WAVE_SAMPLES 200
-  #define NUM_ENV_SAMPLES 30
-  #define NUM_CHANNELS 2
-#endif
-
+// NOTE: we only support Arduino Mega!
+#define PIN_LED1 11
+#define PIN_LED2 12
+#define PIN_LED3 13
+#define PIN_LED4 2
+#define PIN_LED5 3
+#define PIN_LED6 5
+#define NUM_WAVE_SAMPLES 600
+#define NUM_ENV_SAMPLES 60
+// NUM_CHANNELS should be 6 for now.
+// Values <6 should work, but only 2 and 6 have been tested.
+#define NUM_CHANNELS 6
 
 #define NUM_WAVES 2
 
@@ -148,7 +144,6 @@ static char g_colorSpace;
 // We don't bother setting defaults here; we'll check for valid values and set 
 // the necessary defaults in the code.
 //
-uint8_t EEMEM gee_currents[NUM_CHANNELS];
 float EEMEM gee_rgb2lms[9];
 char EEMEM gee_deviceId[16];
 
@@ -158,14 +153,6 @@ float g_lms2rgb[9];
 
 // Instantiate Messenger object
 Messenger g_message = Messenger(',','[',']'); 
-
-// Instantiate LedShift object
-// This is only used in setCurrents, but we get a weird compiler error when we put it in there.
-#if NUM_CHANNELS>3
-  LedShift g_shift = LedShift(2, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
-#else
-  LedShift g_shift = LedShift(1, PIN_SHIFTDATA, PIN_SHIFTLATCH, PIN_SHIFTENABLE, PIN_SHIFTCLOCK);
-#endif
 
 // Create the Message callback function. This function is called whener a complete 
 // message is received on the serial port.
@@ -203,10 +190,6 @@ void messageReady() {
       Serial << F("    A higher frequency will give better fidelity for high frequency wavforms. However, the maximum\n");
       Serial << F("    rate is limited by the complexity of the waveform code. If you set this value too high, the CPU\n");
       Serial << F("    spends all its time servicing the interrupt, effectively locking it up. \n");
-      Serial << F("[c"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",max") << i; } Serial << F("]\n");
-      Serial << F("    Set the maximum current output for each channel and store them in EEPROM. This assumes the\n");
-      Serial << F("    Allegro A6280 constant current source is driving the LEDs and that it is connected to pins\n");
-      Serial << F("    5 (data, SDI), 6 (latch, LI), 7 (enable, OEI), and 8 (clock, CI).\n"); 
       Serial << F("[v,waveNum]\n");
       Serial << F("    Validate the specified waveform. Prints some intenral variables and waveform stats.\n");
       Serial << F("[d,waveNum]\n");
@@ -294,24 +277,6 @@ void messageReady() {
         }
       }
       else Serial << F("ERROR: interrupt frequency command requires a frequency parameter.\n");
-      break;
-
-    case 'c': // Set LED max currents on A6280 constant current source chip
-      while(g_message.available()) val[i++] = g_message.readInt();
-      if(i<NUM_CHANNELS){
-        Serial << F("LED current requires ") << NUM_CHANNELS << F(" parameters.\n");
-      }else{
-        for(i=0; i<NUM_CHANNELS; i++)
-          if(val[i]<0||val[i]>127){
-            Serial << F("LED current values must be >=0 and <=127.\n");
-            val[0] = 255;
-            break;
-          }
-        if(val[0]!=255){
-          saveCurrents(val);
-          setCurrents();
-        }
-      }
       break;
 
     case 'v':
@@ -783,38 +748,6 @@ ISR(TIMER2_COMPA_vect) {
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
   
   //g_shift.Disable(); // We can use the enable pin to test ISR timing
-}
-
-void saveCurrents(float *newCurrents){
-  byte cur[NUM_CHANNELS];
-  for(int i=0; i<NUM_CHANNELS; i++)
-    cur[i] = (byte)newCurrents[i];
-  eeprom_write_block((void*)cur, (void*)gee_currents, NUM_CHANNELS);
-}
-
-void setCurrents(){
-  // Note: we only support up to 6 channels (2 shift register chips)
-  byte cur[6];
-  bool err = false;
-  byte i;
-  
-  eeprom_read_block((void*)cur, (const void*)gee_currents, NUM_CHANNELS);
-  for(i=0; i<NUM_CHANNELS; i++){
-    if(cur[i]>127){
-      err = true;
-      break;
-    }
-  }
-  if(err){
-    for(i=0; i<6; i++) cur[i] = 64;
-    Serial << F("Corrupt current spec in EEPROM- using defaults.\n");
-  }else if(NUM_CHANNELS<6){
-    for(i=NUM_CHANNELS; i<6; i++) cur[i] = 0;
-  }
-  g_shift.SetCurrents(cur);
-  Serial << F("Current command packet sent: \n"); 
-  for(i=0; i<NUM_CHANNELS; i++)
-    Serial << F("Channel ") << (int)i << F(": ") << (int)cur[i] << F(" = ") << g_shift.GetCurrentPercent(cur[i]) << F("%\n");
 }
 
 void invertColorMatrix(float A[], float iA[]){

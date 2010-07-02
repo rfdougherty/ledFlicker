@@ -11,7 +11,7 @@ import os, serial, time, numpy, pylab
 # our own pr650 module
 import pr650
 
-arduinoDev = '/dev/ttyUSB2'
+arduinoDev = '/dev/ttyUSB0'
 
 ledSer = serial.Serial(arduinoDev, 57600, timeout=1)
 # Get the arduino serial number
