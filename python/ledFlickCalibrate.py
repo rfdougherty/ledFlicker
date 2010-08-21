@@ -7,7 +7,8 @@
 # You may need to change premissions on the serial ports (look in /dev/tty*).
 
 # standard modules
-import os, serial, time, numpy, pylab
+import os, serial, time, pylab
+from numpy import *
 # our own pr650 module
 import pr650
 
@@ -29,17 +30,22 @@ for l in out: print(l),
 #out = ledSer.readlines()
 #for l in out: print(l),
 
-pr650 = pr650.PR650('/dev/ttyUSB3')
+# You must run this command within a few seconds after turning the PR650 on. 
+# Otherwise, it will reset itself to command mode.
+pr650 = pr650.PR650('/dev/ttyUSB1')
 
 # measure spectra
 ledCmd = ['[m,0,0,0,0,0,0]\n',
-          '[m,1,0,0,1,0,0]\n',
-          '[m,0,1,0,0,1,0]\n',
-          '[m,0,0,1,0,0,1]\n',
+          '[m,1,0,0,0,0,0]\n',
+          '[m,0,1,0,0,0,0]\n',
+          '[m,0,0,1,0,0,0]\n',
+          '[m,0,0,0,1,0,0]\n',
+          '[m,0,0,0,0,1,0]\n',
+          '[m,0,0,0,0,0,1]\n',
           '[m,1,1,1,1,1,1]\n']
-nRepeats = 20;
-specPow = numpy.zeros((101,5,nRepeats))
-specLum = numpy.zeros((5,nRepeats));
+nRepeats = 10;
+specPow = zeros((101,len(ledCmd),nRepeats))
+specLum = zeros((len(ledCmd),nRepeats));
 for i in range(nRepeats):
     for j,cmd in enumerate(ledCmd):
         ledSer.write(cmd);
@@ -51,29 +57,26 @@ for i in range(nRepeats):
 
 # measure gamma
 nRepeats = 4;
-nChannels = 3
-pwmLevels = numpy.linspace(0,1023,20)/1023
-curLevels = numpy.linspace(0,127,10)
-gamma = numpy.zeros((nChannels,10,20,nRepeats));
+nChannels = 6
+nLevels = 20
+pwmLevels = linspace(0,1023,nLevels)/1023
+gamma = zeros((nChannels,nLevels,nRepeats));
 for i in range(nRepeats):
-    for j,cur in enumerate(curLevels):
-        for k,pwm in enumerate(pwmLevels):
-            for chan in range(nChannels):
-                tmp = [0,0,0,0,0,0]
-                tmp[chan] = cur
-                curCmd = '[c,%0.0f,%0.0f,%0.0f]' % (tmp[0],tmp[1],tmp[2])
-                tmp[chan] = pwm
-                pwmCmd = '[m,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f]' % (tmp[0],tmp[1],tmp[2],tmp[3],tmp[4],tmp[5])
-                ledSer.write(curCmd+pwmCmd+"\n")
-                time.sleep(0.1)
-                gamma[chan,j,k,i] = pr650.measureLum()
+    for j,pwm in enumerate(pwmLevels):
+        for chan in range(nChannels):
+            tmp = zeros((nChannels,1))
+            tmp[chan] = pwm
+            pwmCmd = '[m,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f]' % (tmp[0],tmp[1],tmp[2],tmp[3],tmp[4],tmp[5])
+            ledSer.write(pwmCmd+"\n")
+            time.sleep(0.1)
+            gamma[chan,j,i] = pr650.measureLum()
 
 
 
 # Save the data in npz format
 board = "mega1"
 # manufacturer name _ manufacturer product # _ led number (0 or 1?)
-ledName = "Kingbright-AAAF5060PBESURVGEC_led0"
+ledName = "Rebel_stars"
 calDate = time.strftime("%Y-%m-%d %H:%M:%S")
 outName = board+"_led0_"+time.strftime("%y%m%d%H%M")
 numpy.savez(outName, board=board, ledName=ledName, calDate=calDate, nm=nm, specLum=specLum, specPow=specPow, pwmLevels=pwmLevels, curLevels=curLevels, gamma=gamma)
@@ -88,9 +91,10 @@ numpy.savez(outName, board=board, ledName=ledName, calDate=calDate, nm=nm, specL
 
 specMn = numpy.mean(specPow,2)
 specSd = numpy.std(specPow,2)
-col = ['k','r','g','b','y']
+# colors are: royal blue, 
+col = ['k','m','g','r','b','c','y','k']
 pylab.figure
-for i in range(5):
+for i in range(size(specMn,1)):
     pylab.errorbar(nm,specMn[:,i],specSd[:,i],color=col[i],capsize=0)
 
 pylab.xlabel('Wavelength (nm)')
