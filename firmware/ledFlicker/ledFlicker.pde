@@ -169,7 +169,7 @@ void messageReady() {
       Serial << F("[?]\n");
       Serial << F("    Help (displays this text).\n");
       Serial << F("[m"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",val") << i; } Serial << F("]\n");
-      Serial << F("    Set the mean outputs (0 - 1.0) for all channels.\n");
+      Serial << F("    Set the mean outputs (0 - ") << PWM_MAXVAL << F(") for all channels.\n");
       Serial << F("[e,duration,riseFall]\n");
       Serial << F("    Set the envelope duration and rise/fall times (in seconds).\n");
       Serial << F("[w,waveNum,frequency,phase,amp0,amp1,...]\n");
@@ -195,16 +195,16 @@ void messageReady() {
       break;
       
     case 'm': // Set mean outputs
-      while(g_message.available()) val[i++] = g_message.readFloat();
+      while(g_message.available()) val[i++] = g_message.readInt();
       if(i!=1 && i!=NUM_CHANNELS){
         Serial << F("set outputs requires one param or ") << NUM_CHANNELS << F(" params.\n");
       }else{
         stopISR();
         if(i==1){
-          setAllMeans(val[0]);
+          setAllMeans((int)val[0]);
         }else{
           for(i=0; i<NUM_CHANNELS; i++)
-            setMean(i, val[i]);
+            setMean(i, (int)val[i]);
         }
         applyMeans();
         Serial << F("Means set to ["); for(i=0; i<NUM_CHANNELS; i++) Serial << g_mean[i] << F(" "); Serial << F("]\n");
@@ -339,8 +339,8 @@ void setup(){
   Serial << F("Initializing all waveforms to zero amplitude.\n");
   float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++) setupWave(i, 0.0, 0.0, amp);
-  Serial << F("Initializing all means to 0.02.\n");
-  setAllMeans(0.02);
+  Serial << F("Initializing all means to ") << PWM_MAXVAL/100 << F("\n");
+  setAllMeans(PWM_MAXVAL/100);
   applyMeans();
   setupEnvelope(3.0, 0.2);
 
@@ -570,15 +570,15 @@ void setOutput(byte chan, unsigned int val){
   }
 }
 
-void setAllMeans(float val){
+void setAllMeans(int val){
   for(byte i=0; i<NUM_CHANNELS; i++)
     setMean(i,val);
 }
 
-void setMean(byte chan, float val){
-  if(val<0.0)      val = 0.0;
-  else if(val>1.0) val = 1.0;
-  g_mean[chan] = val*PWM_MAXVAL;
+void setMean(byte chan, int val){
+  if(val<0)               val = 0;
+  else if(val>PWM_MAXVAL) val = PWM_MAXVAL;
+  g_mean[chan] = val;
 }
 
 void applyMeans(){
