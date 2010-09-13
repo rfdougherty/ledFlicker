@@ -20,10 +20,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * TO DO:
- *   - remove color transform code from here. With up to 6 primaries, it's just
- *     too much to try to tackle in here. Instead, I think we should store the 
- *     calibration data (emission spectra and luminances) in EEPROM and allow 
- *     the user to get it out and compute their own color transforms.
+ *   - store calibration data (emission spectra and gamma) in EEPROM and allow 
+ *     the user to get it out to compute color transforms and gamma correction.
  *   - Add general-purpose commands to set/get some digital pins and ADC reads.
  *     This would be useful for, e.g., interfacing with EEG or MR scanner.
  *   - Keep track of the number of hours of service for the LEDs. This would be
@@ -38,9 +36,11 @@
  * LEDs. We no longer use the Allegro A6280 for a constant current source, so
  * I've elimated all the code related to the current adjustment. I've also removed
  * support for non-mega Arduinos.
+ * 2010.09.13 Bob: Removed old color transform code and increased resolution to
+ * 12-bits. 
  */
 
-#define VERSION "0.5"
+#define VERSION "0.6"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -74,24 +74,13 @@
 #define PIN_LED6 5
 #define NUM_WAVE_SAMPLES 600
 #define NUM_ENV_SAMPLES 60
+#define PIN_TEMP 0     // Analog input pin for temperture sensor
+#define PIN_FAN  4     // Digital input for fan speed detector
 // NUM_CHANNELS should be 6 for now.
 // Values <6 should work, but only 2 and 6 have been tested.
 #define NUM_CHANNELS 6
 
 #define NUM_WAVES 2
-
-#define INTERRUPT_FREQ 2000
-// The interrupt frequency is the rate at which the waveform samples will
-// play out. A higher frequency will give better fidelity for high frequency
-// wavforms. However, the maximum rate is limited by the complexity of the 
-// ISR (interrupt function) that is run. If you set the INTERRUPT_FREQ too high, 
-// the CPU will spend all its time servicing the interrupt, effectively locking 
-// it up. For the current 6-channel ISR, we can easily go at 2kHz. If we tighten
-// up the ISR code, we could go faster. See:
-//   http://www.embedded.com/columns/15201575?_requestid=291362
-//   http://www.cs.uiowa.edu/~jones/bcd/divide.html#fixed
-//   http://www.piclist.com/techref/method/math/fixed.htm
-
 
 // g_interruptFreq is the same as the INTERRUPT_FREQ, except for qunatization
 // error. E.g., INTERRUPT_FREQ might be 3000, but the actual frequency achieved
@@ -104,9 +93,9 @@ static float g_interruptFreq;
 // The maxval determines the resolution of the PWM output. E.g.:
 // 255 for 8-bit, 511 for 9-bit, 1023 for 10-bit, 2047 for 11-bit, 4095 for 12 bit.
 // But remember that higher resolution means slower PWM frequency. I.e., 
-// PWM freq ~= F_CPU/PWM_MAXVAL for fast PWM and ~= F_CPU/PWM_MAXVAL/2 for 
-// phase/freq correct PWM.
-#define PWM_MAXVAL 1023
+// PWM freq = F_CPU/(PWM_MAXVAL+1) for fast PWM and = F_CPU/PWM_MAXVAL/2 for 
+// phase/freq correct PWM. E.g., for 12-bit, PWM freq will be 1.95kHz for non-fast PWM.
+#define PWM_MAXVAL 4095
 #define PWM_MIDVAL (PWM_MAXVAL/2.0)
 // Fast PWM goes twice as fast, but the pulses aren't as spectrally nice as
 // the non-fast ("phase and frequency correct") PWM mode. Also, 'zero' is
@@ -115,6 +104,21 @@ static float g_interruptFreq;
 // you don't need true zero. And, you can trade off some of the extra speed 
 // for better resolution (see PWM_MAXVAL).
 #define PWM_FAST_FLAG false
+
+#define INTERRUPT_FREQ 2000
+// The interrupt frequency is the rate at which the waveform samples will
+// play out. A higher frequency will give better fidelity for high frequency
+// wavforms. However, the maximum rate is limited by the complexity of the 
+// ISR (interrupt function) that is run. If you set the INTERRUPT_FREQ too high, 
+// the CPU will spend all its time servicing the interrupt, effectively locking 
+// it up. For the current 6-channel ISR, we can easily go at 2kHz. If we tighten
+// up the ISR code, we could go faster. See:
+//   http://www.embedded.com/columns/15201575?_requestid=291362
+//   http://www.cs.uiowa.edu/~jones/bcd/divide.html#fixed
+//   http://www.piclist.com/techref/method/math/fixed.htm
+// Also note that the waveforms can't be updated faster than the PWM period. 
+// So, if PWM period is relatively slow (e.g., <=2kHz), it's probably a good
+// idea to set the interrupt to be exactly the same as the PWM freq.
 
 // We need some globals because of the interrupt service routine (ISR) that
 // is used to play out the waveforms. ISRs can't take in parameters, but they
@@ -135,21 +139,13 @@ static float g_mean[NUM_CHANNELS];
 static float g_sineInc[NUM_WAVES];
 unsigned int g_phase[NUM_WAVES];
 
-// The colorspace to use
-static char g_colorSpace;
-
 //
 // Define EEPROM variables for static configuration vars
 //
 // We don't bother setting defaults here; we'll check for valid values and set 
 // the necessary defaults in the code.
 //
-float EEMEM gee_rgb2lms[9];
 char EEMEM gee_deviceId[16];
-
-// Color transform matrices
-float g_rgb2lms[9];
-float g_lms2rgb[9];
 
 // Instantiate Messenger object
 Messenger g_message = Messenger(',','[',']'); 
@@ -176,7 +172,7 @@ void messageReady() {
       Serial << F("    Set the mean outputs (0 - 1.0) for all channels.\n");
       Serial << F("[e,duration,riseFall]\n");
       Serial << F("    Set the envelope duration and rise/fall times (in seconds).\n");
-      Serial << F("[w,waveNum,frequency,amplitude,(phase=0),(mean=0.5)]\n");
+      Serial << F("[w,waveNum,frequency,phase,amp0,amp1,...]\n");
       Serial << F("    Set waveform parameters for the specified waveform number (up to ") << NUM_WAVES << F("). Setting a\n");
       Serial << F("    waveform takes about half a millisecond for transformed color space; much less for native space.\n");      
       Serial << F("[p]\n");
@@ -193,17 +189,9 @@ void messageReady() {
       Serial << F("[v,waveNum]\n");
       Serial << F("    Validate the specified waveform. Prints some intenral variables and waveform stats.\n");
       Serial << F("[d,waveNum]\n");
-      Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n");
-      Serial << F("[l,m11,m12,m13,m21,m22,m23,m31,m32,m33]\n");
-      Serial << F("    Set the rgb2lms color transform matrix and store it in EEPROM. Matrix order is row1, row2, row3.\n");
-      Serial << F("    The lms2rgb matrix is also used and is computed internally. Call this with no args to see the \n");
-      Serial << F("    transform matrices that are currently stored in EEPROM.\n");      
-      Serial << F("[x,l|r]\n");
-      Serial << F("    Set the color space transform to be used for subsequent commands. Currently supported\n");    
-      Serial << F("    spaces are 'c' (human cone space) and 'n' (native LED reg,green,blue space). This will\n");
-      Serial << F("    always default to rgb when the firmware boots.\n");      
+      Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n"); 
       Serial << F("For example:\n");
-      Serial << F("[x,c][e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
+      Serial << F("[e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
       break;
       
     case 'm': // Set mean outputs
@@ -219,6 +207,7 @@ void messageReady() {
             setMean(i, val[i]);
         }
         applyMeans();
+        Serial << F("Means set to ["); for(i=0; i<NUM_CHANNELS; i++) Serial << g_mean[i] << F(" "); Serial << F("]\n");
       }
       break;
       
@@ -260,9 +249,10 @@ void messageReady() {
       applyMeans();
       break;
 
-    case 's': // return playout status
-      Serial.println(((float)g_envelopeTicsDuration-g_envelopeTics)/g_interruptFreq,3
-      );
+    case 's': // return status
+      Serial.println(((float)g_envelopeTicsDuration-g_envelopeTics)/g_interruptFreq,3);
+      Serial << F("LED temperature: ") << (float)getTemp() << F(" C");
+      Serial << F(", Fan speed: ") << getFanSpeed() << F(" RPMs\n");
       break;
       
     case 'i': // set interrupt frequency
@@ -303,26 +293,6 @@ void messageReady() {
       else Serial << F("ERROR: dump command requires a channel parameter.\n");
       break;
 
-    case 'l': // Set lms2rgb color transform
-      while(g_message.available()) val[i++] = g_message.readFloat();
-      if(i==0){
-        dumpLmsMatrix();
-      }else if(i<9){
-        Serial << F("rgb2lms requires 9 values!\n");
-      }else{
-        setLmsMatrix(val);
-      }
-      break;
-
-    case 'x': // Set the current color spacem
-      while(g_message.available()) val[i++] = g_message.readChar();
-      if(i<1){
-        Serial << F("color space Xform requires the color space code to be set!\n");
-      }else{
-        setColorSpace((char)val[0]);
-      }
-      break;
-
     default:
       Serial << F("Unknown command: ") << command << F("\n");
 
@@ -355,32 +325,33 @@ void setup(){
 
   if(PWM_FAST_FLAG) Serial << F("Initializing fast PWM on timer 1.\n");
   else              Serial << F("Initializing phase/frequency correct PWM on timer 1.\n");
-  unsigned int pwmFreq = SetupTimer1(PWM_MAXVAL, PWM_FAST_FLAG);
+  float pwmFreq = SetupTimer1(PWM_MAXVAL, PWM_FAST_FLAG);
   Serial << F("PWM Freq: ") << pwmFreq << F(" Hz; Max PWM value: ") << PWM_MAXVAL << F("\n");
 
   Serial << F("Initializing waveform interrupt on timer 2.\n");
-  g_interruptFreq = SetupTimer2(INTERRUPT_FREQ);
+  if(pwmFreq < INTERRUPT_FREQ)
+    g_interruptFreq = SetupTimer2(pwmFreq);
+  else
+    g_interruptFreq = SetupTimer2(INTERRUPT_FREQ);
   Serial << F("Interrupt Freq: ") << g_interruptFreq << F("; requested freq was: ") << INTERRUPT_FREQ << F("\n");
-  
-  Serial << F("Configuring constant current source shift registers.\n");
-  setCurrents();
-  
-  Serial << F("Setting color transform matrices from stored calibration data.\n");
-  setLmsMatrix(NULL);
-
-  Serial << F("Colorspace is set to native RGB. Use the 'x' command to change it.\n");
-  setColorSpace('n');
     
   // Set waveform defaults
-  Serial << F("Initializing all waveforms to zero amplitude.");
+  Serial << F("Initializing all waveforms to zero amplitude.\n");
   float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++) setupWave(i, 0.0, 0.0, amp);
-  setAllMeans(0.5);
+  Serial << F("Initializing all means to 0.02.\n");
+  setAllMeans(0.02);
   applyMeans();
   setupEnvelope(3.0, 0.2);
 
   // Attach the callback function to the Messenger
   g_message.attach(messageReady);
+  
+  // Configure analog inputs to use the internal 1.1v reference.
+  // See: http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1264707156
+  analogReference(2);
+  //pinMode(PIN_TEMP, INPUT);  // Make sure temperature pin is set for input 
+  pinMode(PIN_FAN, INPUT);
   
   Serial << F("ledFlicker Ready. Send the ? command ([?]) for help.\n");
   Serial << F("There are ") << g_message.FreeMemory() << F(" bytes of RAM free.\n\n");
@@ -392,7 +363,7 @@ void loop(){
 }
 
 
-unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
+float SetupTimer1(unsigned int topVal, bool fastPwm){
   // Set pwm clock divider for timer 1 (the 16-bit timer)
   // For CS12,CS11,CS10: 001 is /1 prescaler (010 is /8 prescaler)
   TCCR1B &= ~(1 << CS12); 
@@ -461,11 +432,11 @@ unsigned int SetupTimer1(unsigned int topVal, bool fastPwm){
   // for fast PWM, PWM_freq = F_CPU/(N*(1+TOP))
   // for phase-correct PWM, PWM_freq = F_CPU/(2*N*TOP)
   // F_CPU = CPU freq, N = prescaler = 1 and TOP = counter top value 
-  unsigned int pwmFreq;
+  float pwmFreq;
   if(fastPwm)
-    pwmFreq = (unsigned int)((float)F_CPU/(1.0+topVal)+0.5);
+    pwmFreq = (float)F_CPU/(1.0+topVal)+0.5;
   else
-    pwmFreq = (unsigned int)((float)F_CPU/(2.0*topVal)+0.5);
+    pwmFreq = (float)F_CPU/(2.0*topVal)+0.5;
 
   return(pwmFreq);
 }
@@ -560,19 +531,6 @@ void setupWave(byte wvNum, float freq, float ph, float *amp){
   g_phase[wvNum] = ph*maxWaveIndex;
   // Amplitude is -1 to 1 (negative inverts phase)
   if(amp!=NULL){
-    if(g_colorSpace=='c'){
-      // *** TODO: we can save some calcs here if we cache the backLMS values that get computed in lmsToRgb.
-      float backRgb[3];
-      if(NUM_CHANNELS>=3){
-        for(i=0;i<3;i++) backRgb[i] = g_mean[i]/PWM_MAXVAL;
-        lmsToRgb(&(amp[0]), backRgb);
-      }
-      if(NUM_CHANNELS>=6){
-        for(i=0;i<3;i++) backRgb[i] = g_mean[i+3]/PWM_MAXVAL;
-        lmsToRgb(&(amp[3]), backRgb);  
-      }    
-    }
-    // Note that we do nothing for native ('n') colorspace.
     // Now set the amplitudes in the global
     for(i=0; i<NUM_CHANNELS; i++)
       g_amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
@@ -750,87 +708,27 @@ ISR(TIMER2_COMPA_vect) {
   //g_shift.Disable(); // We can use the enable pin to test ISR timing
 }
 
-void invertColorMatrix(float A[], float iA[]){
-  // Quick-n-dirty 3x3 matrix inverse.
-  // To do: check precision error (e.g., large determinant)
-  float determinant = +A[0]*(A[4]*A[8]-A[7]*A[5])
-                      -A[1]*(A[3]*A[8]-A[5]*A[6])
-                      +A[2]*(A[3]*A[7]-A[4]*A[6]);
-  float invdet = 1/determinant;
-  iA[0] =  (A[4]*A[8]-A[7]*A[5])*invdet;
-  iA[1] = -(A[1]*A[8]-A[2]*A[7])*invdet;
-  iA[2] =  (A[1]*A[5]-A[2]*A[4])*invdet;
-  iA[3] = -(A[3]*A[8]-A[5]*A[6])*invdet;
-  iA[4] =  (A[0]*A[8]-A[2]*A[6])*invdet;
-  iA[5] = -(A[0]*A[5]-A[3]*A[2])*invdet;
-  iA[6] =  (A[3]*A[7]-A[6]*A[4])*invdet;
-  iA[7] = -(A[0]*A[7]-A[6]*A[1])*invdet;
-  iA[8] =  (A[0]*A[4]-A[3]*A[1])*invdet;
-}
-
-// Copies the global rgb2lms matrix from EEPROM and inverts it to also set lms2rgb.
-// If rgb2lms is not null, then the EEPROM data is updated with the new matrix before setting the globals.
-void setLmsMatrix(float rgb2lms[]){
-  if(rgb2lms!=NULL)
-    eeprom_write_block((void*)rgb2lms, (void*)gee_rgb2lms, 9*sizeof(float));
-  eeprom_read_block((void*)g_rgb2lms, (const void*)gee_rgb2lms, 9*sizeof(float));
-  invertColorMatrix(g_rgb2lms, g_lms2rgb); 
-}
-
-void dumpLmsMatrix(){
-  Serial << F("rgb2lms: [ ") << g_rgb2lms[0] << F(",") << g_rgb2lms[1] << F(",") << g_rgb2lms[2] << F("\n");
-  Serial << F("           ") << g_rgb2lms[3] << F(",") << g_rgb2lms[4] << F(",") << g_rgb2lms[5] << F("\n");
-  Serial << F("           ") << g_rgb2lms[6] << F(",") << g_rgb2lms[7] << F(",") << g_rgb2lms[8] << F(" ]\n"); 
-  Serial << F("lms2rgb: [ ") << g_lms2rgb[0] << F(",") << g_lms2rgb[1] << F(",") << g_lms2rgb[2] << F("\n");
-  Serial << F("           ") << g_lms2rgb[3] << F(",") << g_lms2rgb[4] << F(",") << g_lms2rgb[5] << F("\n");
-  Serial << F("           ") << g_lms2rgb[6] << F(",") << g_lms2rgb[7] << F(",") << g_lms2rgb[8] << F(" ]\n");
-}
-
-byte setColorSpace(char colorSpaceCode){
-  if(colorSpaceCode!='n'&&colorSpaceCode!='c'){
-    Serial << F("SetColorSpace: Invalid code: '") << colorSpaceCode << F("'\n");
-    return(1);
-  }else{
-    g_colorSpace = colorSpaceCode;
+float getTemp(){
+  const byte numReadings = 2*-0;
+  float reading;
+  for(byte i=0; i<numReadings; i++){
+    reading += analogRead(PIN_TEMP);
+    delay(1);
   }
+  reading /= numReadings;
+  // converting that reading to voltage. We assume that we're using the internal 1.1v reference
+  float voltage = reading * 1.1 / 1024; 
+  // convert from 10 mv per degree with 500 mV offset to degrees ((volatge - 500mV) * 100)
+  float temp = (voltage - 0.5) * 100;
+  //if(fFlag) temp = (temp * 9 / 5) + 32;
+  return(temp);
 }
 
-void lmsToRgb(float stim[], float backRgb[]){
-  //Serial << F("lms: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
-  float backLms[3];
-  xformColor(backRgb, g_rgb2lms, backLms);
-  float scaledStimLMS[3];
-  scaledStimLMS[0] = 2.0*stim[0]*backLms[0];
-  scaledStimLMS[1] = 2.0*stim[1]*backLms[1];
-  scaledStimLMS[2] = 2.0*stim[2]*backLms[2];
-  // Note that stim is transformed in-place
-  xformColor(scaledStimLMS, g_lms2rgb, stim);
-  // scale by the max so that it is physically realizable
-  float maxVal = 0;
-  for(byte i=0; i<3; i++){
-    float tmp = fabs(stim[i]);
-    if(tmp>maxVal) maxVal = tmp;
-  }
-  if(maxVal>1){
-    Serial << F("rgb exceeds max! Scaling to fit within gamut:\n");
-    stim[0] = stim[0]/maxVal;
-    stim[1] = stim[1]/maxVal;
-    stim[2] = stim[2]/maxVal;
-    Serial << F("rgb: [ ") << stim[0] << F(",") << stim[1] << F(",") << stim[2] << F(" ]\n");
-    float lms[3]; 
-    xformColor(stim, g_rgb2lms, lms);
-    for(int i=0;i<3;i++) lms[i] = lms[i] / backLms[i] / 2.0;
-    Serial << F("Actual lms: [ ") << lms[0] << F(",") << lms[1] << F(",") << lms[2] << F(" ]\n");
-  }
-  //stimRGB = stimRGB/abs(stimRGB).max()*scale;
-  // compute the actual LMS contrast
-  //float actualLMS[3]; actualLMS = xformColor(stimRGB, g_rgb2lms, actualLMS) / backLms / 2.0;
+unsigned int getFanSpeed(){
+  const unsigned long timeoutMicrosecs = 6e4; // timeout in 60 milliseconds; allows us to measure down to 1000 rpms
+  unsigned long pulseDelta = pulseIn(PIN_FAN, HIGH, timeoutMicrosecs);
+  //Serial << "pulseDelta=" << pulseDelta << "\n";
+  unsigned int rpms = 60e6/pulseDelta;
+  return(rpms);
 }
-
-void xformColor(float vecIn[], float tm[], float vecOut[]){
-  vecOut[0] = vecIn[0]*tm[0] + vecIn[1]*tm[1] + vecIn[2]*tm[2];
-  vecOut[1] = vecIn[0]*tm[3] + vecIn[1]*tm[4] + vecIn[2]*tm[5];
-  vecOut[2] = vecIn[0]*tm[6] + vecIn[1]*tm[7] + vecIn[2]*tm[8];
-}
-
 
