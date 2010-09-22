@@ -7,12 +7,26 @@
 # You may need to change premissions on the serial ports (look in /dev/tty*).
 
 # standard modules
-import os, serial, time, pylab
+import os, serial, time, pylab, scipy, scipy.io
 from numpy import *
 # our own pr650 module
-import pr650
+from pr650 import *
 
+calDir = "calData"
+
+# Make sure that the two devices are writable by the user (e.g., sudo chmod a+rw /dev/ttyUSB*)
+# you can figure out the devices on linux with something like:
+# dmesg | tail
+# then, look for 
+#    "FTDI USB Serial Device converter now attached to ttyUSB2" (that's the arduino device)
+#    "pl2303 converter now attached to ttyUSB3" (that's the PR650)
 arduinoDev = '/dev/ttyUSB0'
+pr650Dev   = '/dev/ttyUSB1'
+
+# You must run this command within a few seconds after turning the PR650 on. 
+# Otherwise, it will reset itself to command mode.
+pr650 = PR650(pr650Dev)
+pr650.measure()
 
 ledSer = serial.Serial(arduinoDev, 57600, timeout=1)
 # Get the arduino serial number
@@ -30,92 +44,158 @@ for l in out: print(l),
 #out = ledSer.readlines()
 #for l in out: print(l),
 
-# You must run this command within a few seconds after turning the PR650 on. 
-# Otherwise, it will reset itself to command mode.
-pr650 = pr650.PR650('/dev/ttyUSB1')
+# Get pylab ready for interactive figure plotting (allows us to plot data as we go).
+pylab.ion()
+col = ['m','g','r','b','c','y']
+fig = pylab.figure(figsize=(14,6))
+# initialize the spectra subplot
+spectAx = fig.add_subplot(1,2,1,title='Spectra',xlabel='Wavelength (nm)',ylabel='Power (watts/sr/m^2/nm)')
+spectAx.grid(True)
+# initialize the gamma figure
+gammaAx = fig.add_subplot(1,2,2,title='Gamma Calibration',xlabel='PWM value',ylabel='Luminance (cd/m^2)')
+gammaAx.grid(True)
+pylab.draw()
 
-# measure spectra
-ledCmd = ['[m,0,0,0,0,0,0]\n',
-          '[m,1,0,0,0,0,0]\n',
-          '[m,0,1,0,0,0,0]\n',
-          '[m,0,0,1,0,0,0]\n',
-          '[m,0,0,0,1,0,0]\n',
-          '[m,0,0,0,0,1,0]\n',
-          '[m,0,0,0,0,0,1]\n',
-          '[m,1,1,1,1,1,1]\n']
-nRepeats = 10;
-specPow = zeros((101,len(ledCmd),nRepeats))
-specLum = zeros((len(ledCmd),nRepeats));
-for i in range(nRepeats):
-    for j,cmd in enumerate(ledCmd):
-        ledSer.write(cmd);
-        time.sleep(0.1)
-        pr650.measure()
-        specLum[j,i] = pr650.getLum()
-        [nm,s] = pr650.getSpectrum()
-        specPow[:,j,i] = s
-
-# measure gamma
-nRepeats = 4;
+# Initialze the calibration params
+nRepeats = 3;
 nChannels = 6
-nLevels = 20
-pwmLevels = linspace(0,1023,nLevels)/1023
-gamma = zeros((nChannels,nLevels,nRepeats));
+#nLevels = 48
+#pwmLevels = linspace(0,1023,nLevels)/1023
+meanLevel = 2047
+#pwmLevels = concatenate((array((1,5,10,15,4095,meanLevel)),arange(20,100,20),arange(100,4000,200),arange(4000,4100,20)))
+pwmLevels = concatenate((array((1,10,30,60,100,150,4095,meanLevel)),arange(200,4000,200)))
+pwmLevels.sort()
+nLevels = pwmLevels.shape[0]
+
+offCmd = "[m,0]\n"
+meanCmd = "[m,%d]\n" % meanLevel
+
+# Set the mean level before the countdown to allow the LED die temperature to stabilize
+ledSer.write(meanCmd)
+
+for i in range(5,0,-1):
+    print "Starting %d measurements on %d channels in %d sec..." % (nLevels,nChannels,i)
+    time.sleep(1)
+
+# Measure the spectra with all channels turned on at full blast (useful for detecting
+# power supply issues when driving everything hard)
+specPowAll = zeros((101,nRepeats))
+specLumAll = zeros((nRepeats))
 for i in range(nRepeats):
+    ledSer.write("[m,4095,4095,4095,4095,4095,4095]\n")
+    time.sleep(0.1)
+    specLumAll[i] = pr650.measureLum()
+    ledSer.write(meanCmd)
+    [nm,s] = pr650.getSpectrum()
+    specPowAll[:,i] = s
+    # Plot these measurements
+    spectAx.plot(nm,specPowAll[:,i],color='gray')
+    gammaAx.plot(4095,specLumAll[i],'o',color='gray',alpha=0.7)
+    pylab.draw()
+    # Clear ledSerial buffer
+    out = ledSer.readlines()
+
+# Measure the dark level
+specPowDark = zeros((101,nRepeats))
+specLumDark = zeros((nRepeats))
+for i in range(nRepeats):
+    ledSer.write(offCmd)
+    time.sleep(0.1)
+    specLumDark[i] = pr650.measureLum()
+    ledSer.write(meanCmd)
+    [nm,s] = pr650.getSpectrum()
+    specPowDark[:,i] = s
+    # Plot these measurements
+    spectAx.plot(nm,specPowDark[:,i],color='k')
+    gammaAx.plot(0,specLumDark[i],'o',color='k',alpha=0.7)
+    pylab.draw()
+    # Clear ledSerial buffer
+    out = ledSer.readlines()
+
+# measure gamma/spectra
+gamma = zeros((nChannels,nLevels,nRepeats));
+specPow = zeros((101,nChannels,nLevels,nRepeats))
+for i in range(nRepeats):
+    print "Gamma measurement %d of %d..." % (i+1,nRepeats)
     for j,pwm in enumerate(pwmLevels):
         for chan in range(nChannels):
-            tmp = zeros((nChannels,1))
+            ledSer.write(meanCmd)
+            tmp = zeros((nChannels,1),'uint16')
             tmp[chan] = pwm
-            pwmCmd = '[m,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f]' % (tmp[0],tmp[1],tmp[2],tmp[3],tmp[4],tmp[5])
-            ledSer.write(pwmCmd+"\n")
-            time.sleep(0.1)
+            pwmCmd = "[m,%d,%d,%d,%d,%d,%d]\n" % (tmp[0],tmp[1],tmp[2],tmp[3],tmp[4],tmp[5])
+            ledSer.write(pwmCmd)
+            out = ledSer.readlines()
+            #for l in out: print(l),
+            time.sleep(0.2)
             gamma[chan,j,i] = pr650.measureLum()
+            # as soon as the measurment is over, go back to the mean
+            ledSer.write(meanCmd)
+            [nm,s] = pr650.getSpectrum()
+            specPow[:,chan,j,i] = s
+            # Plot these measurements
+            spectAx.plot(nm,specPow[:,chan,j,i],color=col[chan])
+            gammaAx.plot(pwm,gamma[chan,j,i],'o',color=col[chan],alpha=0.7)
+            pylab.draw()
 
-
+# Turn off all LEDs
+ledSer.write(offCmd)
 
 # Save the data in npz format
 board = "mega1"
 # manufacturer name _ manufacturer product # _ led number (0 or 1?)
 ledName = "Rebel_stars"
 calDate = time.strftime("%Y-%m-%d %H:%M:%S")
-outName = board+"_led0_"+time.strftime("%y%m%d%H%M")
-numpy.savez(outName, board=board, ledName=ledName, calDate=calDate, nm=nm, specLum=specLum, specPow=specPow, pwmLevels=pwmLevels, curLevels=curLevels, gamma=gamma)
+outName = calDir+board+"_"+time.strftime("%y%m%d%H%M")
+savez(outName, board=board, ledName=ledName, calDate=calDate, nm=nm, specPow=specPow, 
+      pwmLevels=pwmLevels, gamma=gamma, specLumDark=specLumDark, specPowDark=specPowDark,
+      specLumAll=specLumAll, specPowAll=specPowAll, meanLevel=meanLevel)
+
+# Save in matlab mat format
+scipy.io.savemat(outName, {'board':board, 'ledName':ledName, 'calDate':calDate, 'nm':nm, 'specPow':specPow, 'pwmLevels':pwmLevels, 'gamma':gamma, 'specLumDark':specLumDark, 'specPowDark':specPowDark, 'specLumAll':specLumAll, 'specPowAll':specPowAll, 'meanLevel':meanLevel}, appendmat=True, format='5', long_field_names=True)
+
+
+
+
+
 
 # to read the data: 
 # import numpy
 # npz = numpy.load('mega1_led0_1004071750.npz')
 #  nm = npz['nm']
 #  specPow = npz['specPow']
-#  spec = numpy.mean(specPow[:,1:4,:],2)
+#  spec = numpy.mean(specPow[:,1:,:],2)
 #  spec.tofile('spec.txt',sep=",")
 
-specMn = numpy.mean(specPow,2)
-specSd = numpy.std(specPow,2)
-# colors are: royal blue, 
-col = ['k','m','g','r','b','c','y','k']
-pylab.figure
+specMn = mean(specPow,3)
+specSd = std(specPow,3)
+col = ['m','g','r','b','c','y']
+pylab.figure(2)
 for i in range(size(specMn,1)):
-    pylab.errorbar(nm,specMn[:,i],specSd[:,i],color=col[i],capsize=0)
+    for j in range(size(specMn,2)):
+        pylab.errorbar(nm,specMn[:,i,j],specSd[:,i,j],color=col[i],capsize=0)
+
+pylab.errorbar(nm,specPowAll.mean(1),specPowAll.std(1),color='gray',capsize=0)
 
 pylab.xlabel('Wavelength (nm)')
 pylab.ylabel('Power (watts/sr/m^2/nm)')
 pylab.title('Spectral Calibration')
 pylab.grid(True)
-pylab.show()
 
-gammaMn = numpy.mean(gamma,3)
-gammaSd = numpy.std(gamma,3)
-col = ['r','g','b']
-pylab.figure
-for i in range(3):
-    for j in range(0,10,2):
-        pylab.errorbar(pwmLevels,gammaMn[i,j,:],gammaSd[i,j,:],color=col[i],capsize=0)
+gammaMn = gamma.mean(2)
+gammaSd = gamma.std(2)
+# remove outliers
+
+
+col = ['m','g','r','b','c','y']
+pylab.figure(2)
+for i in range(nChannels):
+    pylab.errorbar(pwmLevels,gammaMn[i,:],gammaSd[i,:],color=col[i],capsize=0)
 
 pylab.xlabel('PWM value')
 pylab.ylabel('Luminance (cd/m^2)')
 pylab.title('Gamma Calibration')
 pylab.grid(True)
-pylab.show()
+
 
 # TODO:
 # * Implement a unique board identifier (use USB serial number?)
@@ -123,52 +203,7 @@ pylab.show()
 # * Compute optimal currents based on calibration data
 #   * optimize LMS contrasts?
 #   * Set a particular white point?
-# * Once the board knows it's rgb2lms, allow intensities to be expressed in LMS 
 
-sensors = numpy.fromfile('stockman4.txt',sep=' ')
-sensors = sensors.reshape(101,4)
-snm = sensors[:,0]
-sensors = sensors[:,1:4]
-if numpy.any(snm!=nm):
-    raise NameError('Mismatch between sensor wavelengths and measured wavelengths!')
 
-pylab.figure
-pylab.plot(nm,sensors[:,0],'r',nm,sensors[:,1],'g',nm,sensors[:,2],'b')
-pylab.xlabel('Wavelength (nm)')
-pylab.ylabel('Relative absorption')
-pylab.title('Cone Fundamentals')
-pylab.show()
-
-rgb2lms = numpy.dot(numpy.transpose(sensors), specMn[:,1:4])
-lms2rgb = numpy.linalg.inv(rgb2lms)
-#rgb2lms = numpy.round(rgb2lms/rgb2lms.max()*32767)
-rgb2lms = rgb2lms/rgb2lms.max()
-
-# Set the rgb2lms xform in the device
-cmd = "[l,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f]\n" % (rgb2lms[0,0],rgb2lms[0,1],rgb2lms[0,2],rgb2lms[1,0],rgb2lms[1,1],rgb2lms[1,2],rgb2lms[2,0],rgb2lms[2,1],rgb2lms[2,2])
-ledSer.write(cmd)
-time.sleep(0.5)
-out = ledSer.readlines()
-for l in out: print(l),
-
-# E.g., cmd='[l,0.407322,0.313378,0.226669,0.094211,0.361131,0.316449,0.026011,0.037678,1.000000]\n'
-
-stimLMS = numpy.array([2,-1,0])
-contrast = 1.0
-
-lmsBack = numpy.dot(rgb2lms,(numpy.array([0.5,0.5,0.5])))
-# Scale stimulus LMS by the background LMSscaledStimLMS = stimLMS * lmsBack
-# Determine the stimulus RGB direction 
-# Scale the stimLMS by the lms of the background and multiply by lms2rgbstimRGB = numpy.dot(lms2rgb,stimLMS * lmsBack)
-# scale by the max so that it is physically realizablestimRGB = stimRGB/abs(stimRGB).max()*contrast
-# compute the actual LMS contrast
-actualLMS = numpy.dot(rgb2lms,stimRGB) / lmsBack / 2
-print("ActualLMS contrast = [%0.2f, %0.2f, %0.2f]\n" % (actualLMS[0],actualLMS[1],actualLMS[2]) )
-
-# ledSer = serial.Serial('/dev/ttyUSB0', 57600, timeout=1)
-# Reset means and currents
-#ledSer.write("[m,0.5,0.5,0.5,0.5,0.5,0.5][c,64,64,64]\n")
-cmd = "[e,10,.2][w,0,1,0,%0.4f,%0.4f,%0.4f,0,0,0][p]\n" % (stimRGB[0],stimRGB[1],stimRGB[2])
-ledSer.write(cmd)
 
 
