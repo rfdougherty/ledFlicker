@@ -1,0 +1,66 @@
+from scipy import *
+from scipy.optimize import leastsq
+import scipy.io
+import numpy, pylab
+
+calData = numpy.load('/home/bob/svn/vistadisp/ledFlicker/python/calData/mega1_1009171423.npz')
+nm = calData['nm']
+specPow = calData['specPow']
+gamma = calData['gamma']
+pwmLevels = calData['pwmLevels']
+
+gammaMn = gamma.mean(2)
+gammaSd = gamma.std(2)
+
+pylab.ion()
+col = ['m','g','r','b','c','y']
+fig = pylab.figure(figsize=(14,6))
+gammaAx = fig.add_subplot(1,2,1,title='Gamma',xlabel='PWM value',ylabel='Luminance (cd/m^2)')
+gammaAx.grid(True)
+pylab.draw()
+for i in range(gammaMn.shape[0]):
+    gammaAx.errorbar(pwmLevels,gammaMn[i,:],gammaSd[i,:],color=col[i],capsize=0)
+
+
+# A forth-order polynomial seems to achieve a good fit to the LED gamma curves. 
+# These curves are mostly linear, but have two slight inflections; one at the 
+# low end and one at the high end. Thus, we need at least a 4th order to fit 
+# this shape. Based on trial-and-error, going to higher-order offers no benefit.
+
+def residuals(p, y, x): 
+	err = y-peval(x,p) 
+	return err
+
+def peval(x, p):
+    return p[0] + p[1]*x + p[2]*x**2 + p[3]*x**3 + p[4]*x**4
+
+fig = pylab.figure(figsize=(14,6))
+gammaAx = fig.add_subplot(1,2,1,title='Gamma Fit',xlabel='PWM value',ylabel='Relative Luminance')
+gammaAx.grid(True)
+invAx = fig.add_subplot(1,2,2,title='Inverse Gamma Fit',ylabel='PWM value',xlabel='Relative Luminance')
+invAx.grid(True)
+pylab.draw()
+pGamma = zeros((gammaMn.shape[0],5))
+pInvGamma = zeros((gammaMn.shape[0],5))
+for i in range(gammaMn.shape[0]):
+    x = pwmLevels
+    y = gammaMn[i,:]
+    y = y/y.max()
+    p0 = array([0,1,.1,.01,.001])
+    plsq = leastsq(residuals, p0, args=(y, x), maxfev=2000)
+    pGamma[i,:] = plsq[0]
+    gammaAx.plot(x,y,'o',x,peval(x,plsq[0]),'-',color=col[i])
+    y = pwmLevels
+    x = gammaMn[i,:]
+    x = x/x.max()*65000
+    p0 = array([-20,2300,6300,-9000,4300])
+    plsq = leastsq(residuals, p0, args=(y, x), maxfev=2000)
+    pInvGamma[i,:] = plsq[0]
+    invAx.plot(x,y,'o',x,peval(x,plsq[0]),'-',color=col[i])
+    pylab.draw()
+    print "Final parameters"
+    for i in range(plsq[0].shape[0]):
+	    print "p[%d] = %.4g " % (i, plsq[0][i])
+
+
+
