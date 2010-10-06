@@ -20,8 +20,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * TO DO:
- *   - store calibration data (emission spectra and gamma) in EEPROM and allow 
- *     the user to get it out to compute color transforms and gamma correction.
+ *   - Store gamma curve fit parameters and apply gamma correction.
+ *   - Synchronize waveform updates with PWM timer. (Just use PWM timer interrupt?)
+ *   - Store calibration emission spectra in EEPROM and allow the user to get 
+ *     it out to compute color transforms.
  *   - Add general-purpose commands to set/get some digital pins and ADC reads.
  *     This would be useful for, e.g., interfacing with EEG or MR scanner.
  *   - Keep track of the number of hours of service for the LEDs. This would be
@@ -132,7 +134,7 @@ static unsigned int g_envelopeStartEnd;
 static unsigned int g_envelopeEndStart;
 static unsigned int g_envelopeDwell;
 
-volatile unsigned int g_envelopeTics;
+volatile unsigned long int g_envelopeTics;
 
 static float g_amplitude[NUM_CHANNELS*NUM_WAVES];
 static float g_mean[NUM_CHANNELS];
@@ -171,14 +173,16 @@ void messageReady() {
       Serial << F("[m"); for(i=1; i<=NUM_CHANNELS; i++){ Serial << F(",val") << i; } Serial << F("]\n");
       Serial << F("    Set the mean outputs (0 - ") << PWM_MAXVAL << F(") for all channels.\n");
       Serial << F("[e,duration,riseFall]\n");
-      Serial << F("    Set the envelope duration and rise/fall times (in seconds).\n");
+      Serial << F("    Set the envelope duration and rise/fall times (in seconds, max = ") << 65535.0/g_interruptFreq << F(" secs).\n");
+      Serial << F("    Set duration=0 for no envelope and infinite duration.\n");
       Serial << F("[w,waveNum,frequency,phase,amp0,amp1,...]\n");
-      Serial << F("    Set waveform parameters for the specified waveform number (up to ") << NUM_WAVES << F("). Setting a\n");
-      Serial << F("    waveform takes about half a millisecond for transformed color space; much less for native space.\n");      
+      Serial << F("    Set waveform parameters for the specified waveform number (up to ") << NUM_WAVES << F(").\n");
+      Serial << F("    Phase is 0-1, with 0.5 = pi radians. Amplitudes are -1 to 1.\n");
       Serial << F("[p]\n");
-      Serial << F("    Play the waveforms.\n");
+      Serial << F("    Play the waveforms. If the duration is infinite, then you only need to run\n");
+      Serial << F("    this command once, even if waveform parmeters are changed.\n");
       Serial << F("[h]\n");
-      Serial << F("    Halt waveform playout.\n");
+      Serial << F("    Halt waveform playout. This is especially useful with an infinite duration.\n");
       Serial << F("[s]\n");
       Serial << F("    Status. Returns the time remaining for current playout (0 if no playout).\n");
       Serial << F("[i]\n");
@@ -226,11 +230,11 @@ void messageReady() {
       if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
         Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
       }else{
-        stopISR();
+        //stopISR();
         // setup the waveform. params are: wave num, freq, phase, amp[]
         if(val[0]>=0&&val[0]<NUM_WAVES){
           setupWave((byte)val[0], val[1], val[2], &val[3]);
-          applyMeans();
+          //applyMeans();
         }else{
           Serial << F("ERROR: waveform setup requires first param to be a valid wave number.\n");
         }
@@ -590,41 +594,47 @@ void applyMeans(){
 float setupEnvelope(float duration, float envRiseFall){
   // Configure the envelope global values
   // envelope rise/fall time is translated to the g_envelope incrementer
+  // g_envelopeTicsDuration is an unsigned int, so the max number of tics is 65535.
+  // A duration of 0 means no envelope- run forever.
   if(duration*g_interruptFreq>65535.0)
     duration = 65535.0/g_interruptFreq;
-  g_envelopeDwell = (unsigned int)(envRiseFall/((float)NUM_ENV_SAMPLES/g_interruptFreq)+0.5);
   g_envelopeTicsDuration = (unsigned int)(duration*g_interruptFreq);
-  g_envelopeStartEnd = (NUM_ENV_SAMPLES-1)*g_envelopeDwell;
-  g_envelopeEndStart = g_envelopeTicsDuration-g_envelopeStartEnd;
+  if(g_envelopeTicsDuration==0){
+    duration = Inf;
+    g_envelopeDwell = 0;
+  }else{
+    g_envelopeDwell = (unsigned int)(envRiseFall/((float)NUM_ENV_SAMPLES/g_interruptFreq)+0.5);
+    g_envelopeStartEnd = (NUM_ENV_SAMPLES-1)*g_envelopeDwell;
+    g_envelopeEndStart = g_envelopeTicsDuration-g_envelopeStartEnd;
+  }
   // initialize the state variable
   g_envelopeTics = 0;
   return(duration);
 }
 
-unsigned int getEnvelopeIndex(unsigned int curTics){
+float getEnvelopeVal(unsigned long int curTics){
   static const unsigned int maxEnvelopeIndex = NUM_ENV_SAMPLES-1;
   unsigned int envIndex;
 
   // Must be careful of overflow. For interrupt freq of 2kHz, max duation is ~ 32 secs. For 4kHz it is ~16.
   // We could switch to long ints if needed.
 
-  if((curTics>g_envelopeStartEnd && curTics<g_envelopeEndStart) || g_envelopeDwell==0){
-    envIndex = maxEnvelopeIndex;
+  if(g_envelopeDwell==0 || (curTics>g_envelopeStartEnd && curTics<g_envelopeEndStart)){
+    return(1.0);
   }
-  else if(curTics<=g_envelopeStartEnd){
+  if(curTics<=g_envelopeStartEnd){
     envIndex = (unsigned int)((float)curTics/g_envelopeDwell+0.5);
-  }
-  else if(curTics>=g_envelopeEndStart){
+  }else if(curTics>=g_envelopeEndStart){
     envIndex = (unsigned int)((float)(g_envelopeTicsDuration-curTics)/g_envelopeDwell+0.5);
   }
   // TO DO: replace floating point math with properly-rounded integer math.
-  return(envIndex);
+  return(g_envelope[envIndex]);
 }
 
 
 // This is the core function for waveform generation. It is called in the 
 // ISR to output the waveform to the PWNM channels. 
-void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals){
+void updateWave(unsigned int curTics, float envVal, unsigned int *vals){
   byte wv, ch, ampInd;
   
   // Initialize each channel to the mean value, plus 0.5. The +0.5 is to do a proper rounding
@@ -632,19 +642,22 @@ void updateWave(unsigned int curTics, unsigned int envIndex, unsigned int *vals)
   for(ch=0; ch<NUM_CHANNELS; ch++) 
     vals[ch] = g_mean[ch]+0.5;
 
-  // *** WORK HERE: the loops below can probably be optimized. E.g., we don't need
-  // to clamp to the proper output range on each iteration.
+  // *** WORK HERE: the loops below can probably be optimized. 
 
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
+  curTics = curTics%NUM_WAVE_SAMPLES;
   for(wv=0; wv<NUM_WAVES; wv++){
-    unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
-    float envSine = g_envelope[envIndex]*g_sineWave[sineIndex];
+    //unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
+    unsigned int sineIndex = g_sineInc[wv]*curTics+g_phase[wv]+0.5;
+    float envSine = envVal*g_sineWave[sineIndex];
     for(ch=0; ch<NUM_CHANNELS; ch++){
       ampInd = wv*NUM_CHANNELS+ch;
       vals[ch] += (unsigned int)(envSine*g_amplitude[ampInd]);
-      if(vals[ch]<0) vals[ch] = 0;
-      else if(vals[ch]>PWM_MAXVAL) vals[ch] = PWM_MAXVAL;
     }
+  }
+  for(ch=0; ch<NUM_CHANNELS; ch++) {
+    if(vals[ch]<0) vals[ch] = 0;
+    else if(vals[ch]>PWM_MAXVAL) vals[ch] = PWM_MAXVAL;
   }
 }
 
@@ -655,7 +668,7 @@ void validateWave(byte chan){
   unsigned int val[NUM_CHANNELS];
 
   for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
-    updateWave(i, getEnvelopeIndex(i), val);
+    updateWave(i, getEnvelopeVal(i), val);
     if(val[chan]>maxVal) maxVal = val[chan];
     if(val[chan]<minVal) minVal = val[chan];
     mnVal += (float)val[chan]/g_envelopeTicsDuration;
@@ -668,7 +681,7 @@ void dumpWave(byte chan){
   
   Serial << F("wave=[");
   for(int i=0; i<g_envelopeTicsDuration; i++){
-    updateWave(i, getEnvelopeIndex(i), val);
+    updateWave(i, getEnvelopeVal(i), val);
     Serial << val[chan] << F(",");
   }
   Serial << F("];\n");
@@ -684,8 +697,7 @@ ISR(TIMER2_COMPA_vect) {
   static byte i;
   unsigned int val[NUM_CHANNELS];
   
-  envInd = getEnvelopeIndex(g_envelopeTics);
-  updateWave(g_envelopeTics, envInd, val);
+  updateWave(g_envelopeTics, getEnvelopeVal(g_envelopeTics), val);
   
   OCR1A = val[0];
   OCR1B = val[1];
@@ -696,10 +708,14 @@ ISR(TIMER2_COMPA_vect) {
   OCR3A = val[5];
   #endif
   // Make the interrupt self-terminating
-  if(g_envelopeTics>=g_envelopeTicsDuration){
+  if(g_envelopeTicsDuration>0 && g_envelopeTics>=g_envelopeTicsDuration){
     stopISR();
   }else{
     g_envelopeTics++;
+    // If duration is zero, that means run forever. So, we just keep looping over
+    // the sine index.
+    if(g_envelopeTicsDuration==0 && g_envelopeTics>NUM_WAVE_SAMPLES)
+        g_envelopeTics = 0;
   }
   // Note: there is no assurance that the PWMs will get set to their mean values
   // when the waveform play-out finishes. Thus, g_envelope must be designed to

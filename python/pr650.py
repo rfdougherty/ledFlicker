@@ -43,7 +43,7 @@ class PR650:
             self.com.close()
             return None
         if reply != self.codes['OK']: 
-            log.debug("PR650 isn't communicating") 
+            print("PR650 isn't communicating") 
             self.OK = False 
             self.com.close() # in this case we need to close the port again 
         else:
@@ -99,13 +99,19 @@ class PR650:
 
     def parseSpectrumOutput(self, raw):
         # Parses the spectrum strings from the PR650 (command 'd5')
-        nPoints=len(raw) 
-        raw=raw[2:] 
+        nPoints = len(raw) 
+        raw = raw[2:] 
         power = []
         nm = []
         for n, point in enumerate(raw):
             thisNm, thisPower = string.split(point,',')
             nm.append(float(thisNm))
             power.append(float(thisPower.replace('\r\n','')))
-        return numpy.asfarray(nm), numpy.asfarray(power) 
+        # If the PR650 doesn't get enough photons, it won't update the spec buffer.
+        # So, we need to check for that condition to avoid returning an old (incorrect) spectrum.
+        
+        if self.lum==0.0:
+            return numpy.asfarray(nm), numpy.zeros(nPoints-2)
+        else:
+            return numpy.asfarray(nm), numpy.asfarray(power) 
 
