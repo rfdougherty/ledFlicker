@@ -42,7 +42,7 @@
  * 12-bits. 
  */
 
-#define VERSION "0.6"
+#define VERSION "0.7"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -82,7 +82,7 @@
 // Values <6 should work, but only 2 and 6 have been tested.
 #define NUM_CHANNELS 6
 
-#define NUM_WAVES 2
+#define NUM_WAVES 1
 
 // g_interruptFreq is the same as the INTERRUPT_FREQ, except for qunatization
 // error. E.g., INTERRUPT_FREQ might be 3000, but the actual frequency achieved
@@ -134,6 +134,11 @@ static unsigned int g_envelopeStartEnd;
 static unsigned int g_envelopeEndStart;
 static unsigned int g_envelopeDwell;
 
+// We'll make the main clock counter a long int so taht we can run for many hours
+// hours before wrapping. Users will generally want to run for a few seconds, or
+// run forever. So, we'll keep the other tic counters as short ints for efficiency.
+// With this configuration, we can run precisely timed, temporally enveloped stimuli 
+// up to ~30 sec duration, or we can run forever with no temporal envelope.
 volatile unsigned long int g_envelopeTics;
 
 static float g_amplitude[NUM_CHANNELS*NUM_WAVES];
@@ -148,6 +153,10 @@ unsigned int g_phase[NUM_WAVES];
 // the necessary defaults in the code.
 //
 char EEMEM gee_deviceId[16];
+float EEMEM gee_invGamma[NUM_CHANNELS][5];
+
+// To use the inverse gamma params, we'll need to copy them to RAM:
+float g_invGamma[NUM_CHANNELS][5];
 
 // Instantiate Messenger object
 Messenger g_message = Messenger(',','[',']'); 
@@ -155,7 +164,7 @@ Messenger g_message = Messenger(',','[',']');
 // Create the Message callback function. This function is called whener a complete 
 // message is received on the serial port.
 void messageReady() {
-  //g_message.echoBuffer();
+  g_message.echoBuffer();
   float val[max(2*NUM_CHANNELS,12)];
   int i = 0;
   if(g_message.available()) {
@@ -185,15 +194,16 @@ void messageReady() {
       Serial << F("    Halt waveform playout. This is especially useful with an infinite duration.\n");
       Serial << F("[s]\n");
       Serial << F("    Status. Returns the time remaining for current playout (0 if no playout).\n");
-      Serial << F("[i]\n");
-      Serial << F("    Set the interrupt frequency that controls waveform sample rate (100 - 5000).\n");
-      Serial << F("    A higher frequency will give better fidelity for high frequency wavforms. However, the maximum\n");
-      Serial << F("    rate is limited by the complexity of the waveform code. If you set this value too high, the CPU\n");
-      Serial << F("    spends all its time servicing the interrupt, effectively locking it up. \n");
       Serial << F("[v,waveNum]\n");
       Serial << F("    Validate the specified waveform. Prints some intenral variables and waveform stats.\n");
       Serial << F("[d,waveNum]\n");
       Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n"); 
+      Serial << F("[g,channel,p0,p1,p2,p3,p4]\n");
+      Serial << F("    Set the inverse gamma polynomial parameters and store them in EEPROM. They will \n");
+      Serial << F("    be loaded automatically each time the board boots up. The computed (internal) modulation\n");
+      Serial << F("    values s are in the range (0,1). The PWM value output for a given modulation value s is:\n");
+      Serial << F("       pwm = p0 + p1*s + p2*s^2 + p3*s^3 + p4*s^4\n");
+      Serial << F("    Call this with no args to see the values currently stored in EEPROM.\n"); 
       Serial << F("For example:\n");
       Serial << F("[e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
       break;
@@ -259,20 +269,6 @@ void messageReady() {
       Serial << F(", Fan speed: ") << getFanSpeed() << F(" RPMs\n");
       break;
       
-    case 'i': // set interrupt frequency
-      if(g_message.available()){
-        stopISR();
-        val[0] = g_message.readInt();
-        if(val[0]<100||val[0]>6000)
-          Serial << F("ERROR: interrupt frequency must be >=100 and <=6000.\n");
-        else{
-            g_interruptFreq = SetupTimer2((int)val[0]);
-            Serial << F("Interrupt Freq: ") << g_interruptFreq << F("; requested freq was: ") << (int)val[0] << F("\n");
-        }
-      }
-      else Serial << F("ERROR: interrupt frequency command requires a frequency parameter.\n");
-      break;
-
     case 'v':
       if(g_message.available()){
         val[0] = g_message.readInt();
@@ -296,6 +292,20 @@ void messageReady() {
       }
       else Serial << F("ERROR: dump command requires a channel parameter.\n");
       break;
+      
+    case 'g': // Set inverse gamma parameters
+      while(g_message.available()) val[i++] = g_message.readFloat();
+      if(i<=1){
+        dumpInvGamma();
+      }else if(i<6){
+        Serial << F("g requires either 0 args (to dump current vals) or 6 values to set the inv gamma for a channel!\n");
+      }else if(val[0]<0 || val[0]>=NUM_CHANNELS){
+          Serial << F("First argument is the channel number and must be >0 and <") << NUM_CHANNELS << F(".\n");
+      }else{
+          setInvGamma((byte)val[0], &(val[1]));
+      }
+      break;
+
 
     default:
       Serial << F("Unknown command: ") << command << F("\n");
@@ -332,21 +342,22 @@ void setup(){
   float pwmFreq = SetupTimer1(PWM_MAXVAL, PWM_FAST_FLAG);
   Serial << F("PWM Freq: ") << pwmFreq << F(" Hz; Max PWM value: ") << PWM_MAXVAL << F("\n");
 
-  Serial << F("Initializing waveform interrupt on timer 2.\n");
-  if(pwmFreq < INTERRUPT_FREQ)
-    g_interruptFreq = SetupTimer2(pwmFreq);
-  else
-    g_interruptFreq = SetupTimer2(INTERRUPT_FREQ);
-  Serial << F("Interrupt Freq: ") << g_interruptFreq << F("; requested freq was: ") << INTERRUPT_FREQ << F("\n");
+  g_interruptFreq = pwmFreq;
+  Serial << F("Interrupt Freq: ") << g_interruptFreq << F(" Hz\n");
     
   // Set waveform defaults
   Serial << F("Initializing all waveforms to zero amplitude.\n");
   float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++) setupWave(i, 0.0, 0.0, amp);
-  Serial << F("Initializing all means to ") << PWM_MAXVAL/100 << F("\n");
-  setAllMeans(PWM_MAXVAL/100);
+  Serial << F("Initializing all means to ") << PWM_MAXVAL/2 << F("\n");
+  setAllMeans(PWM_MAXVAL/2);
   applyMeans();
   setupEnvelope(3.0, 0.2);
+  
+  // Load inverse gamma params from EEPROM into RAM
+  Serial << F("Loading stored inverse gamma parmeters.\n");
+  for(int i=0; i<NUM_CHANNELS; i++) setInvGamma(i,NULL);
+  dumpInvGamma();
 
   // Attach the callback function to the Messenger
   g_message.attach(messageReady);
@@ -363,10 +374,22 @@ void setup(){
 
 void loop(){
   // The most effective way of using Serial and Messenger's callback:
-  while ( Serial.available() )  g_message.process(Serial.read () );
+  while(Serial.available())  g_message.process(Serial.read());
 }
 
 
+// 
+// Timer 1 (and 3, if on a Mega) Configuration
+// 
+// See: http://www.uchobby.com/index.php/2007/11/24/arduino-interrupts/
+// 
+// Bit-primer:
+//   Setting a bit: byte |= 1 << bit;
+//   Clearing a bit: byte &= ~(1 << bit);
+//   Toggling a bit: byte ^= 1 << bit;
+//   Checking if a bit is set: if (byte & (1 << bit))
+//   Checking if a bit is cleared: if (~byte & (1 << bit)) OR if (!(byte & (1 << bit)))
+//
 float SetupTimer1(unsigned int topVal, bool fastPwm){
   // Set pwm clock divider for timer 1 (the 16-bit timer)
   // For CS12,CS11,CS10: 001 is /1 prescaler (010 is /8 prescaler)
@@ -387,6 +410,7 @@ float SetupTimer1(unsigned int topVal, bool fastPwm){
     TCCR1A &=  ~(1 << WGM11); 
     TCCR1A &=  ~(1 << WGM10);
   }
+
   // Now load the topVal into the register. We can only do this after setting the mode:
   //   The ICRn Register can only be written when using a Waveform Generation mode that utilizes
   //   the ICRn Register for defining the counter’s TOP value. In these cases the Waveform Genera-
@@ -445,87 +469,31 @@ float SetupTimer1(unsigned int topVal, bool fastPwm){
   return(pwmFreq);
 }
 
-// 
-// Timer 2 Configuration
-// 
-// See: http://www.uchobby.com/index.php/2007/11/24/arduino-interrupts/
-// 
-// Configures the ATMega168 8-Bit Timer2 to generate an interrupt
-// at the specified frequency. Returns the timer load value which 
-// must be loaded into TCNT2 inside your ISR routine.
-//
-// Bit-primer:
-//   Setting a bit: byte |= 1 << bit;
-//   Clearing a bit: byte &= ~(1 << bit);
-//   Toggling a bit: byte ^= 1 << bit;
-//   Checking if a bit is set: if (byte & (1 << bit))
-//   Checking if a bit is cleared: if (~byte & (1 << bit)) OR if (!(byte & (1 << bit)))
-float SetupTimer2(float freq){
-  unsigned int topVal;
-  unsigned int ps;
-
-  // Timer2 Prescalar setting: (0,0,0 to disable clock)
-  // We want to use the fastest interrupt (smallest prescaler) possible
-  // to minimize quantization error and ensure the closest match between 
-  // requested and acutal frequency.
-  // baseFreq is the slowest interrupt for a prescale of 1 (F_CPU/(1*(1+255))).
-  float baseFreq = (float)F_CPU/256.0;
-  if(freq>=baseFreq){
-    ps = 1;
-    TCCR2B &= ~(1<<CS22); TCCR2B &= ~(1<<CS21); TCCR2B |=  (1<<CS20);
-  }else if(freq>=baseFreq/8.0){
-    ps = 8;
-    TCCR2B &= ~(1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B &= ~(1<<CS20);
-  }else if(freq>=baseFreq/32.0){
-    ps = 32;
-    TCCR2B &= ~(1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B |=  (1<<CS20);
-  }else if(freq>=baseFreq/64.0){
-    ps = 64;
-    TCCR2B |=  (1<<CS22); TCCR2B &= ~(1<<CS21); TCCR2B &= ~(1<<CS20);
-  }else if(freq>=baseFreq/128.0){
-    ps = 128;
-    TCCR2B |=  (1<<CS22); TCCR2B &= ~(0<<CS21); TCCR2B |=  (1<<CS20);
-  }else if(freq>=baseFreq/256.0){
-    ps = 256;
-    TCCR2B |=  (1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B &= ~(1<<CS20);
-  }else{
-    ps = 1024;
-    TCCR2B |=  (1<<CS22); TCCR2B |=  (1<<CS21); TCCR2B |=  (1<<CS20);
-  }
-
-  // Set up timer for CTC mode. It will fire our interrupt every time it reaches 'TOP'.
-  // We just need to set the prescaler and the TOP value to achieve the desired freq.
-  TCCR2A &= ~(1<<COM2A1) & ~(1<<COM2A0);         // Disconnect OC2A.
-  TCCR2A &= ~(1<<COM2B1) & ~(1<<COM2B0);         // Disconnect OC2B.
-  TCCR2A &= ~(1<<WGM20);  // Mode 2 - CTC (WGM2,1,0 = 0,1,0; WGM22 is in TCCR2B)
-  TCCR2A |=  (1<<WGM21);
-  TCCR2B &= ~(1<<WGM22);
-
-  // Calculate the value that must be reloaded into the TOP register
-  //   interruptFreq = F_CPU/(ps*(topVal+1))
-  //   topVal = F_CPU/(interruptFreq*ps)-1
-  // We also need to add 0.5 for proper rounding, thus:
-  topVal = (unsigned int)((float)F_CPU/(ps*freq)-0.5);
-  if(topVal>255) topVal = 255;
-  // Now compute the exact frequency that we can achieve:
-  freq = (float)F_CPU/(ps*(1.0+topVal));
-
-  // Clear the counter
-  TCNT2 = 0;
-
-  // Set the top value in the register
-  OCR2A = topVal;
-
-  return(freq);
-}
 
 void startISR(){  // Starts the ISR
-  TIMSK2 |= (1<<OCIE2A);                     // enable interrupt (calls ISR(TIMER2_COMPA_vect)
+  TIMSK1 |= (1<<OCIE1A);                     // enable interrupt (calls ISR(TIMER2_COMPA_vect)
 }
 
 void stopISR(){    // Stops the ISR
-  TIMSK2 &= ~(1<<OCIE2A);                    // disable interrupt
+  TIMSK1 &= ~(1<<OCIE1A);                    // disable interrupt
 } 
+
+// Copies the global inverse gamma polynomial parameters from EEPROM.
+// If invGamma is not null, then the EEPROM data is updated with the new matrix before setting the globals.
+void setInvGamma(byte channel, float invGamma[]){
+  // All 6 channels are packed into a 30 float array, with the 5 params for channel 0 first, 
+  // the 5 params for channel 1 next, etc.
+  if(invGamma!=NULL)
+    eeprom_write_block((void*)invGamma, (void*)gee_invGamma[channel], 5*sizeof(float));
+  eeprom_read_block((void*)g_invGamma[channel], (const void*)gee_invGamma[channel], 5*sizeof(float));
+}
+
+void dumpInvGamma(){
+  for(byte i=0; i<6; i++){
+    Serial << F("[g,") << (int)i << F(",") << g_invGamma[i][0] << F(",") << g_invGamma[i][1] << F(",") << g_invGamma[i][2] 
+                 << F(",") << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F("\n");
+  }
+}
 
 void setupWave(byte wvNum, float freq, float ph, float *amp){
   static unsigned int maxWaveIndex = NUM_WAVE_SAMPLES-1;
@@ -600,7 +568,7 @@ float setupEnvelope(float duration, float envRiseFall){
     duration = 65535.0/g_interruptFreq;
   g_envelopeTicsDuration = (unsigned int)(duration*g_interruptFreq);
   if(g_envelopeTicsDuration==0){
-    duration = Inf;
+    duration = 0;
     g_envelopeDwell = 0;
   }else{
     g_envelopeDwell = (unsigned int)(envRiseFall/((float)NUM_ENV_SAMPLES/g_interruptFreq)+0.5);
@@ -634,8 +602,9 @@ float getEnvelopeVal(unsigned long int curTics){
 
 // This is the core function for waveform generation. It is called in the 
 // ISR to output the waveform to the PWNM channels. 
-void updateWave(unsigned int curTics, float envVal, unsigned int *vals){
+void updateWave(unsigned long int curTics, float envVal, unsigned int *vals){
   byte wv, ch, ampInd;
+  float envSine;
   
   // Initialize each channel to the mean value, plus 0.5. The +0.5 is to do a proper rounding
   // when we convert from float to int below.
@@ -645,11 +614,17 @@ void updateWave(unsigned int curTics, float envVal, unsigned int *vals){
   // *** WORK HERE: the loops below can probably be optimized. 
 
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
-  curTics = curTics%NUM_WAVE_SAMPLES;
+  //curTics = curTics%NUM_WAVE_SAMPLES;
   for(wv=0; wv<NUM_WAVES; wv++){
-    //unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
-    unsigned int sineIndex = g_sineInc[wv]*curTics+g_phase[wv]+0.5;
-    float envSine = envVal*g_sineWave[sineIndex];
+    unsigned int sineIndex = (unsigned long int)((fabs(g_sineInc[wv])*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
+    //unsigned int sineIndex = g_sineInc[wv]*curTics+g_phase[wv]+0.5;
+    // A negative frequency will play out a squarewave (thresholded sine)
+    if(g_sineInc[wv]<0){
+      if(g_sineWave[sineIndex]>=0) envSine = envVal*PWM_MIDVAL;
+      else                        envSine = -envVal*PWM_MIDVAL;
+    }else{
+      envSine = envVal*g_sineWave[sineIndex];
+    }
     for(ch=0; ch<NUM_CHANNELS; ch++){
       ampInd = wv*NUM_CHANNELS+ch;
       vals[ch] += (unsigned int)(envSine*g_amplitude[ampInd]);
@@ -673,31 +648,36 @@ void validateWave(byte chan){
     if(val[chan]<minVal) minVal = val[chan];
     mnVal += (float)val[chan]/g_envelopeTicsDuration;
   }
-  Serial << F("Channel #") << chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
+  Serial << F("Channel #") << (int)chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
 }
 
 void dumpWave(byte chan){
   unsigned int val[NUM_CHANNELS];
   
   Serial << F("wave=[");
-  for(int i=0; i<g_envelopeTicsDuration; i++){
+  for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
     updateWave(i, getEnvelopeVal(i), val);
     Serial << val[chan] << F(",");
   }
   Serial << F("];\n");
 }
 
-// Timer2 CTC interrupt vector handler
-// (for overflow, use TIMER2_OVF_vect)
+// Timer1 interrupt vector handler
+// (for overflow, use TIMER1_OVF_vect)
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
-ISR(TIMER2_COMPA_vect) {
+ISR(TIMER1_COMPA_vect) {
   //g_shift.Enable(); // We can use the enable pin to test ISR timing
   static unsigned int envInd;
   static byte i;
   unsigned int val[NUM_CHANNELS];
   
-  updateWave(g_envelopeTics, getEnvelopeVal(g_envelopeTics), val);
+  // We skip computing the envelope value when there is no envelope. This
+  // should make the serial port more responsive during playout.
+  if(g_envelopeTicsDuration>0)
+    updateWave(g_envelopeTics, getEnvelopeVal(g_envelopeTics), val);
+  else
+    updateWave(g_envelopeTics, 1.0, val);
   
   OCR1A = val[0];
   OCR1B = val[1];
@@ -712,10 +692,7 @@ ISR(TIMER2_COMPA_vect) {
     stopISR();
   }else{
     g_envelopeTics++;
-    // If duration is zero, that means run forever. So, we just keep looping over
-    // the sine index.
-    if(g_envelopeTicsDuration==0 && g_envelopeTics>NUM_WAVE_SAMPLES)
-        g_envelopeTics = 0;
+    // NOTE: this will wrap after ~500 hours!
   }
   // Note: there is no assurance that the PWMs will get set to their mean values
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
