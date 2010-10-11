@@ -74,7 +74,7 @@
 #define PIN_LED4 2
 #define PIN_LED5 3
 #define PIN_LED6 5
-#define NUM_WAVE_SAMPLES 600
+#define NUM_WAVE_SAMPLES 1000
 #define NUM_ENV_SAMPLES 60
 #define PIN_TEMP 0     // Analog input pin for temperture sensor
 #define PIN_FAN  4     // Digital input for fan speed detector
@@ -353,6 +353,8 @@ void setup(){
   setAllMeans(PWM_MAXVAL/2);
   applyMeans();
   setupEnvelope(3.0, 0.2);
+  float amps[6] = {0.9,0.9,0.9,0.9,0.9,0.9};
+  setupWave(0, 1.0, 0, amps);
   
   // Load inverse gamma params from EEPROM into RAM
   Serial << F("Loading stored inverse gamma parmeters.\n");
@@ -614,14 +616,14 @@ void updateWave(unsigned long int curTics, float envVal, unsigned int *vals){
   // *** WORK HERE: the loops below can probably be optimized. 
 
   // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
-  //curTics = curTics%NUM_WAVE_SAMPLES;
+  //curTics = (curTics + g_phase[wv])%NUM_WAVE_SAMPLES;
   for(wv=0; wv<NUM_WAVES; wv++){
     unsigned int sineIndex = (unsigned long int)((fabs(g_sineInc[wv])*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
-    //unsigned int sineIndex = g_sineInc[wv]*curTics+g_phase[wv]+0.5;
+    //unsigned int sineIndex = fabs(g_sineInc[wv])*curTics+0.5;
     // A negative frequency will play out a squarewave (thresholded sine)
     if(g_sineInc[wv]<0){
-      if(g_sineWave[sineIndex]>=0) envSine = envVal*PWM_MIDVAL;
-      else                        envSine = -envVal*PWM_MIDVAL;
+      if(g_sineWave[sineIndex]>=0) envSine =  envVal*PWM_MIDVAL;
+      else                         envSine = -envVal*PWM_MIDVAL;
     }else{
       envSine = envVal*g_sineWave[sineIndex];
     }
