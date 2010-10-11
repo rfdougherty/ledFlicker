@@ -53,7 +53,7 @@
 // without using up precious RAM. (Using Flash saved us over 2Kb of RAM!)
 #include <Flash.h>
 #include <Messenger.h>
-
+#include <avrfix.h>
 
 // atmega 168  has  16k flash, 512 EEPROM, 1k RAM
 // atmega 328  has  32k flash,  1k EEPROM, 2k RAM
@@ -65,6 +65,10 @@
 // shouldn't be a problem since we are effectively communicating over USB. But, 
 // just to be sure, we'll use 57.6 kbs.
 #define BAUD 57600
+
+// Waveform types
+#define SQUAREWAVE 0
+#define SINEWAVE 1
 
 // F_CPU and __AVR_ATmega1280__ are defined for us by the arduino environment
 // NOTE: we only support Arduino Mega!
@@ -81,6 +85,9 @@
 // NUM_CHANNELS should be 6 for now.
 // Values <6 should work, but only 2 and 6 have been tested.
 #define NUM_CHANNELS 6
+
+// This pin will be used for general digital output
+#define DIGITAL_OUT_PIN 8
 
 #define NUM_WAVES 1
 
@@ -129,6 +136,7 @@ static float g_interruptFreq;
 static float g_sineWave[NUM_WAVE_SAMPLES];
 static float g_envelope[NUM_ENV_SAMPLES];
 
+
 static unsigned int g_envelopeTicsDuration;
 static unsigned int g_envelopeStartEnd;
 static unsigned int g_envelopeEndStart;
@@ -144,6 +152,8 @@ volatile unsigned long int g_envelopeTics;
 static float g_amplitude[NUM_CHANNELS*NUM_WAVES];
 static float g_mean[NUM_CHANNELS];
 static float g_sineInc[NUM_WAVES];
+static float g_sineInd[NUM_WAVES];
+static byte  g_waveType[NUM_WAVES];
 unsigned int g_phase[NUM_WAVES];
 
 //
@@ -314,6 +324,12 @@ void messageReady() {
   } // end while
 }
 
+// Precompute the digital output register and bitmask.
+// TO DO: wrap this in a fast I/O class
+#include "pins_arduino.h"
+volatile uint8_t *g_digOutReg;
+uint8_t g_digOutBit;
+
 void setup(){
   Serial.begin(BAUD);
   Serial << F("*********************************************************\n");
@@ -321,6 +337,11 @@ void setup(){
   Serial << F("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>\n");
   Serial << F("* For more info, see http://vistalab.stanford.edu/\n");
   Serial << F("*********************************************************\n\n");
+  
+  pinMode(DIGITAL_OUT_PIN, OUTPUT);
+  digitalWrite(DIGITAL_OUT_PIN, HIGH); 
+  g_digOutReg =  portOutputRegister(digitalPinToPort(DIGITAL_OUT_PIN));
+  g_digOutBit = digitalPinToBitMask(DIGITAL_OUT_PIN);
   
   // Compute the wave and envelope LUTs. We could precompute and store them in 
   //flash, but they only take a few 10's of ms to compute when we boot up and it
@@ -336,6 +357,15 @@ void setup(){
     g_envelope[i] = 0.5 - cos(PI*i/(NUM_ENV_SAMPLES-1.0))/2.0;
   ms = millis()-ms;
   Serial << NUM_WAVE_SAMPLES << F(" samples in ") << ms << F(" miliseconds.");
+  
+  Serial << F("Computing wave LUT (fixed): \n");
+  ms = millis();
+  _mAccum sw[NUM_WAVE_SAMPLES];
+  for(int i=0; i<NUM_WAVE_SAMPLES; i++)
+    sw[i] = sin(TWOPI*i/NUM_WAVE_SAMPLES);
+  ms = millis()-ms;
+  Serial << NUM_WAVE_SAMPLES << F(" samples in ") << ms << F(" miliseconds.");
+
 
   if(PWM_FAST_FLAG) Serial << F("Initializing fast PWM on timer 1.\n");
   else              Serial << F("Initializing phase/frequency correct PWM on timer 1.\n");
@@ -372,11 +402,207 @@ void setup(){
   
   Serial << F("ledFlicker Ready. Send the ? command ([?]) for help.\n");
   Serial << F("There are ") << g_message.FreeMemory() << F(" bytes of RAM free.\n\n");
+  digitalWrite(DIGITAL_OUT_PIN, LOW);
 }
 
 void loop(){
   // The most effective way of using Serial and Messenger's callback:
   while(Serial.available())  g_message.process(Serial.read());
+}
+
+// Copies the global inverse gamma polynomial parameters from EEPROM.
+// If invGamma is not null, then the EEPROM data is updated with the new matrix before setting the globals.
+void setInvGamma(byte channel, float invGamma[]){
+  // All 6 channels are packed into a 30 float array, with the 5 params for channel 0 first, 
+  // the 5 params for channel 1 next, etc.
+  if(invGamma!=NULL)
+    eeprom_write_block((void*)invGamma, (void*)gee_invGamma[channel], 5*sizeof(float));
+  eeprom_read_block((void*)g_invGamma[channel], (const void*)gee_invGamma[channel], 5*sizeof(float));
+}
+
+void dumpInvGamma(){
+  for(byte i=0; i<6; i++){
+    Serial << F("[g,") << (int)i << F(",") << g_invGamma[i][0] << F(",") << g_invGamma[i][1] << F(",") << g_invGamma[i][2] 
+                 << F(",") << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F("\n");
+  }
+}
+
+void setupWave(byte wvNum, float freq, float ph, float *amp){
+  static unsigned int maxWaveIndex = NUM_WAVE_SAMPLES-1;
+  byte i;
+  
+  // Phase comes in as a relative value (0-1); convert to the index offset.
+  g_phase[wvNum] = ph*maxWaveIndex;
+  // Amplitude is -1 to 1 (negative inverts phase)
+  if(amp!=NULL){
+    // Now set the amplitudes in the global
+    for(i=0; i<NUM_CHANNELS; i++)
+      g_amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
+  }else{
+    for(i=0; i<NUM_CHANNELS; i++)
+      g_amplitude[wvNum*NUM_CHANNELS+i] = 0.0;
+  }
+  // the incremetor determines the output freq.
+  // Wew scale by NUM_WAVE_SAMPLES/g_interruptFreq to convert freq in Hz to the incremeter value.
+  g_sineInc[wvNum] = fabs(freq)*NUM_WAVE_SAMPLES/g_interruptFreq;
+  if(freq<0)
+    g_waveType[wvNum] = SQUAREWAVE;
+  else
+    g_waveType[wvNum] = SINEWAVE;
+    
+}
+
+/* WOKRK HERE */
+void initWaves(){
+  for(byte wv=0; wv<NUM_WAVES; wv++)
+    g_sineInd[wv] = g_phase[wv];
+}
+
+void setOutput(byte chan, unsigned int val){
+  // Set PWM output to the specified level
+  if(val>PWM_MAXVAL) val = PWM_MAXVAL;
+  switch(chan){
+  case 0: 
+    OCR1A = val; 
+    break;
+  case 1: 
+    OCR1B = val; 
+    break;
+#ifdef __AVR_ATmega1280__
+  case 2: 
+    OCR1C = val; 
+    break;
+  case 3: 
+    OCR3B = val; 
+    break;
+  case 4: 
+    OCR3C = val; 
+    break;
+  case 5: 
+    OCR3A = val; 
+    break;
+#endif
+  }
+}
+
+void setAllMeans(int val){
+  for(byte i=0; i<NUM_CHANNELS; i++)
+    setMean(i,val);
+}
+
+void setMean(byte chan, int val){
+  if(val<0)               val = 0;
+  else if(val>PWM_MAXVAL) val = PWM_MAXVAL;
+  g_mean[chan] = val;
+}
+
+void applyMeans(){
+  // Set PWM output to mean level for all channels
+  for(byte i=0; i<NUM_CHANNELS; i++)
+    setOutput(i, (unsigned int)(g_mean[i]+0.5));
+}
+
+float setupEnvelope(float duration, float envRiseFall){
+  // Configure the envelope global values
+  // envelope rise/fall time is translated to the g_envelope incrementer
+  // g_envelopeTicsDuration is an unsigned int, so the max number of tics is 65535.
+  // A duration of 0 means no envelope- run forever.
+  if(duration*g_interruptFreq>65535.0)
+    duration = 65535.0/g_interruptFreq;
+  g_envelopeTicsDuration = (unsigned int)(duration*g_interruptFreq);
+  if(g_envelopeTicsDuration==0){
+    duration = 0;
+    g_envelopeDwell = 0;
+  }else{
+    g_envelopeDwell = (unsigned int)(envRiseFall/((float)NUM_ENV_SAMPLES/g_interruptFreq)+0.5);
+    g_envelopeStartEnd = (NUM_ENV_SAMPLES-1)*g_envelopeDwell;
+    g_envelopeEndStart = g_envelopeTicsDuration-g_envelopeStartEnd;
+  }
+  // initialize the state variable
+  g_envelopeTics = 0;
+  return(duration);
+}
+
+float getEnvelopeVal(unsigned long int curTics){
+  static const unsigned int maxEnvelopeIndex = NUM_ENV_SAMPLES-1;
+  unsigned int envIndex;
+
+  // Must be careful of overflow. For interrupt freq of 2kHz, max duation is ~ 32 secs. For 4kHz it is ~16.
+  // We could switch to long ints if needed.
+  
+  // TO DO: switch to interger arithmatic, make dwell a power of 2, and use bit-shifting for the division.
+
+  if(g_envelopeDwell==0 || (curTics>g_envelopeStartEnd && curTics<g_envelopeEndStart)){
+    return(1.0);
+  }
+  if(curTics<=g_envelopeStartEnd){
+    envIndex = (unsigned int)((float)curTics/g_envelopeDwell+0.5);
+  }else if(curTics>=g_envelopeEndStart){
+    envIndex = (unsigned int)((float)(g_envelopeTicsDuration-curTics)/g_envelopeDwell+0.5);
+  }
+  // TO DO: replace floating point math with properly-rounded integer math.
+  return(g_envelope[envIndex]);
+}
+
+
+// This is the core function for waveform generation. It is called in the 
+// ISR to output the waveform to the PWNM channels. 
+void updateWave(unsigned long int curTics, float envVal, unsigned int *vals){
+  byte wv, ch, ampInd;
+  float envSine;
+  float fvals[NUM_CHANNELS];
+  
+  // Initialize each channel to the mean value
+  for(ch=0; ch<NUM_CHANNELS; ch++)
+    fvals[ch] = g_mean[ch];
+
+  // *** WORK HERE: the loops below can probably be optimized. 
+
+  for(wv=0; wv<NUM_WAVES; wv++){
+    unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
+    // A negative frequency will play out a squarewave (thresholded sine)
+    if(g_waveType[wv]==SQUAREWAVE){
+      if(g_sineWave[sineIndex]>=0) envSine =  envVal*PWM_MIDVAL;
+      else                         envSine = -envVal*PWM_MIDVAL;
+    }else{
+      envSine = envVal*g_sineWave[sineIndex];
+    }
+    for(ch=0; ch<NUM_CHANNELS; ch++){
+      ampInd = wv*NUM_CHANNELS+ch;
+      fvals[ch] += envSine*g_amplitude[ampInd];
+    }
+  }
+  for(ch=0; ch<NUM_CHANNELS; ch++) {
+    if(fvals[ch]<0) vals[ch] = 0;
+    else if(fvals[ch]>PWM_MAXVAL) vals[ch] = PWM_MAXVAL;
+    else vals[ch] = (unsigned int)(fvals[ch]+0.5);
+  }
+}
+
+void validateWave(byte chan){
+  unsigned int maxVal = 0;
+  unsigned int minVal = 65535;
+  float mnVal = 0.0;
+  unsigned int val[NUM_CHANNELS];
+
+  for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
+    updateWave(i, getEnvelopeVal(i), val);
+    if(val[chan]>maxVal) maxVal = val[chan];
+    if(val[chan]<minVal) minVal = val[chan];
+    mnVal += (float)val[chan]/g_envelopeTicsDuration;
+  }
+  Serial << F("Channel #") << (int)chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
+}
+
+void dumpWave(byte chan){
+  unsigned int val[NUM_CHANNELS];
+  
+  Serial << F("wave=[");
+  for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
+    updateWave(i, getEnvelopeVal(i), val);
+    Serial << val[chan] << F(",");
+  }
+  Serial << F("];\n");
 }
 
 
@@ -471,205 +697,23 @@ float SetupTimer1(unsigned int topVal, bool fastPwm){
   return(pwmFreq);
 }
 
-
 void startISR(){  // Starts the ISR
-  TIMSK1 |= (1<<OCIE1A);                     // enable interrupt (calls ISR(TIMER2_COMPA_vect)
+  //TIMSK1 |= (1<<OCIE1A);        // enable output compare interrupt (calls ISR(TIMER1_COMPA_vect)
+  TIMSK1 |= (1<<TOIE1);        // enable overflow interrupt (calls ISR(TIMER1_OVF_vect_vect)
 }
 
 void stopISR(){    // Stops the ISR
-  TIMSK1 &= ~(1<<OCIE1A);                    // disable interrupt
+  //TIMSK1 &= ~(1<<OCIE1A);      // disable output compare interrupt 
+  TIMSK1 &= ~(1<<TOIE1);      // disable overflow compare interrupt 
 } 
-
-// Copies the global inverse gamma polynomial parameters from EEPROM.
-// If invGamma is not null, then the EEPROM data is updated with the new matrix before setting the globals.
-void setInvGamma(byte channel, float invGamma[]){
-  // All 6 channels are packed into a 30 float array, with the 5 params for channel 0 first, 
-  // the 5 params for channel 1 next, etc.
-  if(invGamma!=NULL)
-    eeprom_write_block((void*)invGamma, (void*)gee_invGamma[channel], 5*sizeof(float));
-  eeprom_read_block((void*)g_invGamma[channel], (const void*)gee_invGamma[channel], 5*sizeof(float));
-}
-
-void dumpInvGamma(){
-  for(byte i=0; i<6; i++){
-    Serial << F("[g,") << (int)i << F(",") << g_invGamma[i][0] << F(",") << g_invGamma[i][1] << F(",") << g_invGamma[i][2] 
-                 << F(",") << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F("\n");
-  }
-}
-
-void setupWave(byte wvNum, float freq, float ph, float *amp){
-  static unsigned int maxWaveIndex = NUM_WAVE_SAMPLES-1;
-  byte i;
-  
-  // Phase comes in as a relative value (0-1); convert to the index offset.
-  g_phase[wvNum] = ph*maxWaveIndex;
-  // Amplitude is -1 to 1 (negative inverts phase)
-  if(amp!=NULL){
-    // Now set the amplitudes in the global
-    for(i=0; i<NUM_CHANNELS; i++)
-      g_amplitude[wvNum*NUM_CHANNELS+i] = amp[i];
-  }else{
-    for(i=0; i<NUM_CHANNELS; i++)
-      g_amplitude[wvNum*NUM_CHANNELS+i] = 0.0;
-  }
-  // the incremetor determines the output freq.
-  // Wew scale by NUM_WAVE_SAMPLES/g_interruptFreq to convert freq in Hz to the incremeter value.
-  g_sineInc[wvNum] = freq*NUM_WAVE_SAMPLES/g_interruptFreq;
-}
-
-void setOutput(byte chan, unsigned int val){
-  // Set PWM output to the specified level
-  if(val>PWM_MAXVAL) val = PWM_MAXVAL;
-  switch(chan){
-  case 0: 
-    OCR1A = val; 
-    break;
-  case 1: 
-    OCR1B = val; 
-    break;
-#ifdef __AVR_ATmega1280__
-  case 2: 
-    OCR1C = val; 
-    break;
-  case 3: 
-    OCR3B = val; 
-    break;
-  case 4: 
-    OCR3C = val; 
-    break;
-  case 5: 
-    OCR3A = val; 
-    break;
-#endif
-  }
-}
-
-void setAllMeans(int val){
-  for(byte i=0; i<NUM_CHANNELS; i++)
-    setMean(i,val);
-}
-
-void setMean(byte chan, int val){
-  if(val<0)               val = 0;
-  else if(val>PWM_MAXVAL) val = PWM_MAXVAL;
-  g_mean[chan] = val;
-}
-
-void applyMeans(){
-  // Set PWM output to mean level for all channels
-  for(byte i=0; i<NUM_CHANNELS; i++)
-    setOutput(i, (unsigned int)(g_mean[i]+0.5));
-}
-
-float setupEnvelope(float duration, float envRiseFall){
-  // Configure the envelope global values
-  // envelope rise/fall time is translated to the g_envelope incrementer
-  // g_envelopeTicsDuration is an unsigned int, so the max number of tics is 65535.
-  // A duration of 0 means no envelope- run forever.
-  if(duration*g_interruptFreq>65535.0)
-    duration = 65535.0/g_interruptFreq;
-  g_envelopeTicsDuration = (unsigned int)(duration*g_interruptFreq);
-  if(g_envelopeTicsDuration==0){
-    duration = 0;
-    g_envelopeDwell = 0;
-  }else{
-    g_envelopeDwell = (unsigned int)(envRiseFall/((float)NUM_ENV_SAMPLES/g_interruptFreq)+0.5);
-    g_envelopeStartEnd = (NUM_ENV_SAMPLES-1)*g_envelopeDwell;
-    g_envelopeEndStart = g_envelopeTicsDuration-g_envelopeStartEnd;
-  }
-  // initialize the state variable
-  g_envelopeTics = 0;
-  return(duration);
-}
-
-float getEnvelopeVal(unsigned long int curTics){
-  static const unsigned int maxEnvelopeIndex = NUM_ENV_SAMPLES-1;
-  unsigned int envIndex;
-
-  // Must be careful of overflow. For interrupt freq of 2kHz, max duation is ~ 32 secs. For 4kHz it is ~16.
-  // We could switch to long ints if needed.
-
-  if(g_envelopeDwell==0 || (curTics>g_envelopeStartEnd && curTics<g_envelopeEndStart)){
-    return(1.0);
-  }
-  if(curTics<=g_envelopeStartEnd){
-    envIndex = (unsigned int)((float)curTics/g_envelopeDwell+0.5);
-  }else if(curTics>=g_envelopeEndStart){
-    envIndex = (unsigned int)((float)(g_envelopeTicsDuration-curTics)/g_envelopeDwell+0.5);
-  }
-  // TO DO: replace floating point math with properly-rounded integer math.
-  return(g_envelope[envIndex]);
-}
-
-
-// This is the core function for waveform generation. It is called in the 
-// ISR to output the waveform to the PWNM channels. 
-void updateWave(unsigned long int curTics, float envVal, unsigned int *vals){
-  byte wv, ch, ampInd;
-  float envSine;
-  
-  // Initialize each channel to the mean value, plus 0.5. The +0.5 is to do a proper rounding
-  // when we convert from float to int below.
-  for(ch=0; ch<NUM_CHANNELS; ch++) 
-    vals[ch] = g_mean[ch]+0.5;
-
-  // *** WORK HERE: the loops below can probably be optimized. 
-
-  // Testing: mn=511.5;amp=1.0;env=1.0; w=floor(env.*amp.*sin([0:.01:2*pi]).*511.5+mn+0.5); [min(w) max(w) mean(w)]
-  //curTics = (curTics + g_phase[wv])%NUM_WAVE_SAMPLES;
-  for(wv=0; wv<NUM_WAVES; wv++){
-    unsigned int sineIndex = (unsigned long int)((fabs(g_sineInc[wv])*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
-    //unsigned int sineIndex = fabs(g_sineInc[wv])*curTics+0.5;
-    // A negative frequency will play out a squarewave (thresholded sine)
-    if(g_sineInc[wv]<0){
-      if(g_sineWave[sineIndex]>=0) envSine =  envVal*PWM_MIDVAL;
-      else                         envSine = -envVal*PWM_MIDVAL;
-    }else{
-      envSine = envVal*g_sineWave[sineIndex];
-    }
-    for(ch=0; ch<NUM_CHANNELS; ch++){
-      ampInd = wv*NUM_CHANNELS+ch;
-      vals[ch] += (unsigned int)(envSine*g_amplitude[ampInd]);
-    }
-  }
-  for(ch=0; ch<NUM_CHANNELS; ch++) {
-    if(vals[ch]<0) vals[ch] = 0;
-    else if(vals[ch]>PWM_MAXVAL) vals[ch] = PWM_MAXVAL;
-  }
-}
-
-void validateWave(byte chan){
-  unsigned int maxVal = 0.0;
-  unsigned int minVal = 65535.0;
-  float mnVal = 0.0;
-  unsigned int val[NUM_CHANNELS];
-
-  for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
-    updateWave(i, getEnvelopeVal(i), val);
-    if(val[chan]>maxVal) maxVal = val[chan];
-    if(val[chan]<minVal) minVal = val[chan];
-    mnVal += (float)val[chan]/g_envelopeTicsDuration;
-  }
-  Serial << F("Channel #") << (int)chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
-}
-
-void dumpWave(byte chan){
-  unsigned int val[NUM_CHANNELS];
-  
-  Serial << F("wave=[");
-  for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
-    updateWave(i, getEnvelopeVal(i), val);
-    Serial << val[chan] << F(",");
-  }
-  Serial << F("];\n");
-}
 
 // Timer1 interrupt vector handler
 // (for overflow, use TIMER1_OVF_vect)
 // see http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1215675974/0
 // and http://www.arduino.cc/cgi-bin/yabb2/YaBB.pl?num=1216085233
-ISR(TIMER1_COMPA_vect) {
-  //g_shift.Enable(); // We can use the enable pin to test ISR timing
+//ISR(TIMER1_COMPA_vect) {
+ISR(TIMER1_OVF_vect) {
+  digitalOutHigh(); // test ISR timing
   static unsigned int envInd;
   static byte i;
   unsigned int val[NUM_CHANNELS];
@@ -699,8 +743,7 @@ ISR(TIMER1_COMPA_vect) {
   // Note: there is no assurance that the PWMs will get set to their mean values
   // when the waveform play-out finishes. Thus, g_envelope must be designed to
   // provide this assurance; e.g., have 0 as it's first value and rise/fall >0 tics.
-  
-  //g_shift.Disable(); // We can use the enable pin to test ISR timing
+  digitalOutLow(); // test ISR timing
 }
 
 float getTemp(){
@@ -725,5 +768,13 @@ unsigned int getFanSpeed(){
   //Serial << "pulseDelta=" << pulseDelta << "\n";
   unsigned int rpms = 60e6/pulseDelta;
   return(rpms);
+}
+
+inline void digitalOutLow(){
+   *g_digOutReg &= ~g_digOutBit;
+}
+
+inline void digitalOutHigh(){
+   *g_digOutReg |= g_digOutBit;
 }
 
