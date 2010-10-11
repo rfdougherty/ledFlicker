@@ -12,14 +12,33 @@ pwmLevels = calData['pwmLevels']
 gammaMn = gamma.mean(2)
 gammaSd = gamma.std(2)
 
+# To compute total power, we need to sum across the spectra bins and multiply by
+# the bin size, in nanometers.
+nmBinSize = mean(diff(nm))
+totalPow = specPow.sum(0)*nmBinSize
+powMn = totalPow.mean(2)
+powSd = totalPow.std(2)
+
 pylab.ion()
 col = ['m','g','r','b','c','y']
 fig = pylab.figure(figsize=(14,6))
 gammaAx = fig.add_subplot(1,2,1,title='Gamma',xlabel='PWM value',ylabel='Luminance (cd/m^2)')
 gammaAx.grid(True)
+powAx = fig.add_subplot(1,2,2,title='Total Power',xlabel='PWM value',ylabel='Total Power (watts/sr/m^2)')
+powAx.grid(True)
 pylab.draw()
 for i in range(gammaMn.shape[0]):
     gammaAx.errorbar(pwmLevels,gammaMn[i,:],gammaSd[i,:],color=col[i],capsize=0)
+    powAx.errorbar(pwmLevels,powMn[i,:],powSd[i,:],color=col[i],capsize=0)
+
+pylab.ion()
+fig = pylab.figure(figsize=(14,6))
+normAx = fig.add_subplot(1,1,1,title='Normalized Luminance and Power',xlabel='PWM value',ylabel='Relative intensity')
+normAx.grid(True)
+pylab.draw()
+for i in range(gammaMn.shape[0]):
+    normAx.plot(pwmLevels,gammaMn[i,:]/gammaMn[i,:].mean(),color=col[i])
+    normAx.plot(pwmLevels,powMn[i,:]/powMn[i,:].mean(),'--',color=col[i])
 
 
 # A forth-order polynomial seems to achieve a good fit to the LED gamma curves. 
@@ -52,15 +71,16 @@ for i in range(gammaMn.shape[0]):
     gammaAx.plot(x,y,'o',x,peval(x,plsq[0]),'-',color=col[i])
     y = pwmLevels
     x = gammaMn[i,:]
-    x = x/x.max()*65000
+    x = x/x.max()
     p0 = array([-20,2300,6300,-9000,4300])
     plsq = leastsq(residuals, p0, args=(y, x), maxfev=2000)
     pInvGamma[i,:] = plsq[0]
     invAx.plot(x,y,'o',x,peval(x,plsq[0]),'-',color=col[i])
     pylab.draw()
-    print "Final parameters"
-    for i in range(plsq[0].shape[0]):
-	    print "p[%d] = %.4g " % (i, plsq[0][i])
 
+
+print "Final parameters"
+for i in range(pInvGamma.shape[0]):
+    print "[g,%d,%4g,%4g,%4g,%4g,%4g]" % (i, pInvGamma[i,0], pInvGamma[i,1], pInvGamma[i,2], pInvGamma[i,3], pInvGamma[i,4])
 
 
