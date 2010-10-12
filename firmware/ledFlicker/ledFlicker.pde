@@ -78,8 +78,16 @@
 #define PIN_LED4 2
 #define PIN_LED5 3
 #define PIN_LED6 5
-#define NUM_WAVE_SAMPLES 1000
-#define NUM_ENV_SAMPLES 60
+// These must be powers of 2! (We use bit-shifting tricks to speed some calcualtions below.)
+// See http://graphics.stanford.edu/~seander/bithacks.html#ModulusDivisionEasy
+#define NUM_WAVE_SAMPLES 1024
+#define NUM_ENV_SAMPLES 64
+#define WAVE_SAMP_SHIFT_BITS (1U << NUM_WAVE_SAMPLES); // will be one of: 1, 2, 4, 8, 16, 32, ...
+// const unsigned int n;          // numerator
+// const unsigned int s;
+// const unsigned int d = 1U << s; // So d will be one of: 1, 2, 4, 8, 16, 32, ...
+// m = n & (d - 1);  // m will be n % d
+
 #define PIN_TEMP 0     // Analog input pin for temperture sensor
 #define PIN_FAN  4     // Digital input for fan speed detector
 // NUM_CHANNELS should be 6 for now.
