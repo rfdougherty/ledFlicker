@@ -58,10 +58,11 @@ def main(argv):
         print(cmdStr)
 
     ledSer.write(cmdStr)
-    out = ledSer.readlines()
     if verbose:
+        out = ledSer.readlines()
         for l in out: print(l),
 
+    ledSer.flushInput()
 
 if __name__ == "__main__":
     main(sys.argv[1:])
