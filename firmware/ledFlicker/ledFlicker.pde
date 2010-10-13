@@ -42,7 +42,7 @@
  * 12-bits. 
  */
 
-#define VERSION "0.7"
+#define VERSION "0.8"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -80,13 +80,12 @@
 #define PIN_LED6 5
 // These must be powers of 2! (We use bit-shifting tricks to speed some calcualtions below.)
 // See http://graphics.stanford.edu/~seander/bithacks.html#ModulusDivisionEasy
-#define NUM_WAVE_SAMPLES 1024
-#define NUM_ENV_SAMPLES 64
-#define WAVE_SAMP_SHIFT_BITS (1U << NUM_WAVE_SAMPLES); // will be one of: 1, 2, 4, 8, 16, 32, ...
-// const unsigned int n;          // numerator
-// const unsigned int s;
-// const unsigned int d = 1U << s; // So d will be one of: 1, 2, 4, 8, 16, 32, ...
-// m = n & (d - 1);  // m will be n % d
+#define WAVE_SAMP_SHIFT 10
+#define ENV_SAMP_SHIFT 7
+#define NUM_WAVE_SAMPLES (1UL << NUM_WAVE_SAMP_SHIFT)
+#define NUM_ENV_SAMPLES (1UL << NUM_ENV_SAMP_SHIFT)
+// unsigned int d = 1U << NUM_WAVE_SAMP_SHIFT; // Denominator must be 1, 2, 4, 8, 16, 32, ...
+// unsigned int m = n & (NUM_WAVE_SAMPLES - 1);  // m will be n % NUM_WAVE_SAMPLES
 
 #define PIN_TEMP 0     // Analog input pin for temperture sensor
 #define PIN_FAN  4     // Digital input for fan speed detector
@@ -567,12 +566,17 @@ void updateWave(unsigned long int curTics, float envVal, unsigned int *vals){
   // *** WORK HERE: the loops below can probably be optimized. 
 
   for(wv=0; wv<NUM_WAVES; wv++){
-    unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
-    // A negative frequency will play out a squarewave (thresholded sine)
+    //unsigned int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv])%NUM_WAVE_SAMPLES;
+    unsigned long int sineIndex = (unsigned long int)((g_sineInc[wv]*curTics+0.5)+g_phase[wv]);
+    // As long as NUM_WAVE_SAMPLES is a power of 2, this is equivalent to sineIndex = sineIndex % NUM_WAVE_SAMPLES
+    // This should be substantially faster than % and thus save us some precious CPU cycles.
+    sineIndex = sineIndex & (NUM_WAVE_SAMPLES - 1);
     if(g_waveType[wv]==SQUAREWAVE){
+      // squarewave (thresholded sine)
       if(g_sineWave[sineIndex]>=0) envSine =  envVal*PWM_MIDVAL;
       else                         envSine = -envVal*PWM_MIDVAL;
     }else{
+      // Only other option is a sinewave.
       envSine = envVal*g_sineWave[sineIndex];
     }
     for(ch=0; ch<NUM_CHANNELS; ch++){
