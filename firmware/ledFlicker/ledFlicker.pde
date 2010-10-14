@@ -168,10 +168,12 @@ static unsigned int g_phase[NUM_WAVES];
 // the necessary defaults in the code.
 //
 char EEMEM gee_deviceId[16];
-float EEMEM gee_invGamma[NUM_CHANNELS][5];
+// The invGamma LUT maps the 257 values [0:256:65536] to the 0-4095 PWM values.
+// This will use 3084 bytes (of the 4096 bytes available in the Arduino Mega EEPROM)
+unsigned int EEMEM gee_invGamma[257][NUM_CHANNELS];
 
 // To use the inverse gamma params, we'll need to copy them to RAM:
-float g_invGamma[NUM_CHANNELS][5];
+float g_invGamma[257][NUM_CHANNELS];
 
 // Instantiate Messenger object
 Messenger g_message = Messenger(',','[',']'); 
@@ -213,12 +215,12 @@ void messageReady() {
       Serial << F("    Validate the specified waveform. Prints some intenral variables and waveform stats.\n");
       Serial << F("[d,waveNum]\n");
       Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n"); 
-      Serial << F("[g,channel,p0,p1,p2,p3,p4]\n");
-      Serial << F("    Set the inverse gamma polynomial parameters and store them in EEPROM. They will \n");
+      Serial << F("[g,lutSlice,ch0,ch1,ch2.ch3,ch4,ch5]\n");
+      Serial << F("    Set the inverse gamma LUT values and store them in EEPROM. They will \n");
       Serial << F("    be loaded automatically each time the board boots up. The computed (internal) modulation\n");
-      Serial << F("    values s are in the range (0,1). The PWM value output for a given modulation value s is:\n");
-      Serial << F("       pwm = p0 + p1*s + p2*s^2 + p3*s^3 + p4*s^4\n");
-      Serial << F("    Call this with no args to see the values currently stored in EEPROM.\n"); 
+      Serial << F("    values s are in the range (0,65536). The PWM value output for a given modulation value s is:\n");
+      Serial << F("       pwm = ((s%16)*lut[s>>4] + (16-s%16)*lut[s>>4+1]\n")) / 16;
+      Serial << F("    Call this with no args to see the LUT values currently stored in EEPROM.\n"); 
       Serial << F("For example:\n");
       Serial << F("[e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
       break;
@@ -290,7 +292,7 @@ void messageReady() {
         validateWave(val[0]);
       }
       else Serial << F("ERROR: validate command requires a channel parameter.\n");
-      break;
+      break;setInvGamma
 
     case 'd':
       if(g_message.available()){
@@ -301,16 +303,17 @@ void messageReady() {
       else Serial << F("ERROR: dump command requires a channel parameter.\n");
       break;
       
-    case 'g': // Set inverse gamma parameters
+    case 'g': 
+      // Set inverse gamma LUT. We can't pass too much data at one time, so we set one slice at a time.
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<=1){
         dumpInvGamma();
-      }else if(i<6){
-        Serial << F("g requires either 0 args (to dump current vals) or 6 values to set the inv gamma for a channel!\n");
-      }else if(val[0]<0 || val[0]>=NUM_CHANNELS){
-          Serial << F("First argument is the channel number and must be >0 and <") << NUM_CHANNELS << F(".\n");
+      }else if(i<8){
+        Serial << F("g requires either 0 args (to dump current vals) or 7 values to set the inv gamma for a LUT entry!\n");
+      }else if(val[0]<0 || val[0]>=257){
+          Serial << F("First argument is the LUT entry number and must be >=0 and <257.\n");
       }else{
-          setInvGamma((byte)val[0], &(val[1]));
+          ((int)val[0], &(val[1]));
       }
       break;
 
@@ -406,12 +409,11 @@ void loop(){
 
 // Copies the global inverse gamma polynomial parameters from EEPROM.
 // If invGamma is not null, then the EEPROM data is updated with the new matrix before setting the globals.
-void setInvGamma(byte channel, float invGamma[]){
-  // All 6 channels are packed into a 30 float array, with the 5 params for channel 0 first, 
-  // the 5 params for channel 1 next, etc.
+void setInvGamma(int lutIndex, float invGammaSlice[]){
+  // The inv gamma tables is arranged as a [6][257] int16 array.
   if(invGamma!=NULL)
-    eeprom_write_block((void*)invGamma, (void*)gee_invGamma[channel], 5*sizeof(float));
-  eeprom_read_block((void*)g_invGamma[channel], (const void*)gee_invGamma[channel], 5*sizeof(float));
+    eeprom_write_block((void*)invGammaSlice, (void*)gee_invGamma[lutIndex], 6*sizeof(unsigned int));
+  eeprom_read_block((void*)g_invGamma[lutIndex], (const void*)gee_invGamma[lutIndex], 6*sizeof(unsigned int));
 }
 
 void dumpInvGamma(){
