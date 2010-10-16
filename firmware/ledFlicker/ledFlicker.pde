@@ -2,7 +2,7 @@
  * ledFlicker sketch for Arduino.
  * 
  * 
- * Six-channel LED oscillator for visual experiments. 
+ * Six-channel, 12-bit, 2 kHz LED oscillator for visual experiments. 
  * 
  *
  * Copyright 2010 Bob Dougherty.
@@ -20,8 +20,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * TO DO:
- *   - Store gamma curve fit parameters and apply gamma correction.
- *   - Synchronize waveform updates with PWM timer. (Just use PWM timer interrupt?)
  *   - Store calibration emission spectra in EEPROM and allow the user to get 
  *     it out to compute color transforms.
  *   - Add general-purpose commands to set/get some digital pins and ADC reads.
@@ -40,6 +38,9 @@
  * support for non-mega Arduinos.
  * 2010.09.13 Bob: Removed old color transform code and increased resolution to
  * 12-bits. 
+ * 2010.10.13 Bob: Converted most of the waveform playout code to integer math
+ * for better efficiency and added gamma correction (257 points per channel, 
+ * with linear interpolation). 
  */
 
 #define VERSION "0.8"
@@ -83,8 +84,6 @@
 #define ENV_SAMP_SHIFT 7
 #define NUM_WAVE_SAMPLES (1UL << WAVE_SAMP_SHIFT)
 #define NUM_ENV_SAMPLES (1UL << ENV_SAMP_SHIFT)
-// unsigned int d = 1U << NUM_WAVE_SAMP_SHIFT; // Denominator must be 1, 2, 4, 8, 16, 32, ...
-// unsigned int m = n & (NUM_WAVE_SAMPLES - 1);  // m will be n % NUM_WAVE_SAMPLES
 
 #define PIN_TEMP 0     // Analog input pin for temperture sensor
 #define PIN_FAN  4     // Digital input for fan speed detector
@@ -107,52 +106,37 @@ static float g_interruptFreq;
 
 // The maxval determines the resolution of the PWM output. E.g.:
 // 255 for 8-bit, 511 for 9-bit, 1023 for 10-bit, 2047 for 11-bit, 4095 for 12 bit.
-// But remember that higher resolution means slower PWM frequency. I.e., 
-// PWM freq = F_CPU/(PWM_MAXVAL+1) for fast PWM and = F_CPU/PWM_MAXVAL/2 for 
-// phase/freq correct PWM. E.g., for 12-bit, PWM freq will be 1.95kHz for non-fast PWM.
+// Higher resolution means slower PWM frequency. I.e., 
+//    PWM freq = F_CPU/(PWM_MAXVAL+1) 
+// for fast PWM and
+//    PWM freq = F_CPU/PWM_MAXVAL/2 
+// for phase/freq correct PWM. E.g., for non-fast 12-bit PWM freq will be 1.95kHz.
 #define PWM_MAXVAL 4095
 #define PWM_MIDVAL (PWM_MAXVAL/2.0)
 // Fast PWM goes twice as fast, but the pulses aren't as spectrally nice as
 // the non-fast ("phase and frequency correct") PWM mode. Also, 'zero' is
-// not really zero (there is a narrow spike that is visible onthe LEDs). All
+// not quite zero (there is a narrow spike that is visible on the LEDs). All
 // the spectral ugliness is way beyond what we can see, so fast PWM is fine if
 // you don't need true zero. And, you can trade off some of the extra speed 
 // for better resolution (see PWM_MAXVAL).
 #define PWM_FAST_FLAG false
 
-#define INTERRUPT_FREQ 2000
-// The interrupt frequency is the rate at which the waveform samples will
-// play out. A higher frequency will give better fidelity for high frequency
-// wavforms. However, the maximum rate is limited by the complexity of the 
-// ISR (interrupt function) that is run. If you set the INTERRUPT_FREQ too high, 
-// the CPU will spend all its time servicing the interrupt, effectively locking 
-// it up. For the current 6-channel ISR, we can easily go at 2kHz. If we tighten
-// up the ISR code, we could go faster. See:
-//   http://www.embedded.com/columns/15201575?_requestid=291362
-//   http://www.cs.uiowa.edu/~jones/bcd/divide.html#fixed
-//   http://www.piclist.com/techref/method/math/fixed.htm
-// Also note that the waveforms can't be updated faster than the PWM period. 
-// So, if PWM period is relatively slow (e.g., <=2kHz), it's probably a good
-// idea to set the interrupt to be exactly the same as the PWM freq.
-
-// We need some globals because of the interrupt service routine (ISR) that
-// is used to play out the waveforms. ISRs can't take in parameters, but they
-// can access globals.
+// We use globals because of the interrupt service routine (ISR) that is used to
+// play out the waveforms. ISRs can't take parameters, but can access globals.
 // TODO: maybe bundle all the globals into a single struct to keep them neat?
 static int g_sineWave[NUM_WAVE_SAMPLES];
 static int g_envelope[NUM_ENV_SAMPLES];
-
 
 static unsigned int g_envelopeTicsDuration;
 static unsigned int g_envelopeStartEnd;
 static unsigned int g_envelopeEndStart;
 static unsigned int g_envelopeDwell;
 
-// We'll make the main clock counter a long int so taht we can run for many hours
-// hours before wrapping. Users will generally want to run for a few seconds, or
-// run forever. So, we'll keep the other tic counters as short ints for efficiency.
-// With this configuration, we can run precisely timed, temporally enveloped stimuli 
-// up to ~30 sec duration, or we can run forever with no temporal envelope.
+// We'll make the main clock counter a long int so that we can run for many
+// hours before wrapping. Users generally want to run for a few seconds or
+// run forever. So, we keep the other tic counters as ints for efficiency.
+// With this configuration, we run precisely timed, temporally enveloped stimuli
+// up to ~30 sec duration, or we run forever with no temporal envelope.
 volatile unsigned long int g_envelopeTics;
 
 static int g_amplitude[NUM_WAVES][NUM_CHANNELS];
@@ -177,17 +161,19 @@ unsigned int EEMEM gee_invGamma[257][NUM_CHANNELS];
 // else in that part of the EEPROM will trigger the firmware to reload the defaults.
 #define EEMEM_MAGIC_BYTE 'G'
 
-// To use the inverse gamma params, we'll need to copy them to RAM:
+// To use the inverse gamma params, we'll need to copy them to RAM. This uses a
+// big chunk of our limited RAM.
 unsigned int g_invGamma[257][NUM_CHANNELS];
 
-// Instantiate Messenger object
+// Instantiate Messenger object used for serial port communication.
 Messenger g_message = Messenger(',','[',']');
 
 char g_errorMessage[128];
 // 0 for very quiet, 1 for some stuff, 2 for more stuff, etc.
 byte g_verboseMode;
 
-// I can't figure out how to pass the PROGMEM stuff via a function call, so we'll just use a macro.
+// I can't figure out how to pass the PROGMEM stuff via a function call, so 
+// we'll just use a macro.
 #define ERROR(str) {strncpy_P(g_errorMessage,PSTR(str),128);error();}
 
 void error(){
@@ -255,7 +241,7 @@ void messageReady() {
     case 'm': // Set mean outputs
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i!=1 && i!=NUM_CHANNELS){
-        ERROR("Set outputs requires one param or 6 params.");
+        ERROR("ERROR: Set outputs requires one param or 6 params.");
       }else{
         stopISR();
         if(i==1){
@@ -273,25 +259,28 @@ void messageReady() {
       
     case 'e': // Set envelope params
       while(g_message.available()) val[i++] = g_message.readFloat();
-      if(i<2) Serial << F("ERROR: envelope setup requires 2 parameters.\n");
+      if(i<2) ERROR("ERROR: envelope setup requires 2 parameters.\n");
       else{
         stopISR();
         float dur = setupEnvelope(val[0], val[1]);
-        Serial << F("Envelope configured; actual duration is ") << dur << F(" seconds.\n");
+        commandOk();
+        if(g_verboseMode>1)
+          Serial << F("Envelope configured; actual duration is ") << dur << F(" seconds.\n");
       }
       break;
 
     case 'w': // setup waveforms
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
-        Serial << F("ERROR: waveform setup requires at least 3 parameters.\n");
+        ERROR("ERROR: waveform setup requires at least 3 parameters.\n");
       }else{
         //stopISR();
         // setup the waveform. params are: wave num, freq, phase, amp[]
         if(val[0]>=0&&val[0]<NUM_WAVES){
           setupWave((byte)val[0], val[1], val[2], &val[3]);
+          commandOk();
         }else{
-          Serial << F("ERROR: waveform setup requires first param to be a valid wave number.\n");
+          ERROR("ERROR: waveform setup requires first param to be a valid wave number.\n");
         }
       }
       break;
@@ -301,11 +290,13 @@ void messageReady() {
       g_envelopeTics = 0;
       // NOTE: g_sineInc is not reset here. So, you must call setupWave before playing.
       startISR();
+      commandOk();
       break;
 
     case 'h': // halt waveform playout
       stopISR();
       applyMeans();
+      commandOk();
       break;
 
     case 's': // return status
@@ -347,20 +338,19 @@ void messageReady() {
       if(i<1){
         dumpInvGamma();
       }else if(i==1){
-     
+      // *** WORK HERE: allow a string to be sent in to set the gamma note string.
+        setInvGammaNotes(val);
       }else if(i<8){
-        Serial << F("g requires either 0 args (to dump current vals) or 7 values to set the inv gamma for a LUT entry!\n");
+        ERROR("ERROR: g requires either 0 args (to dump current vals) or 7 values to set the inv gamma for a LUT entry!\n");
       }else if(val[0]<0 || val[0]>=257){
-          Serial << F("First argument is the LUT entry number and must be >=0 and <257.\n");
+          ERROR("ERROR: First argument is the LUT entry number and must be >=0 and <257.\n");
       }else{
-          ((int)val[0], &(val[1]));
+          setInvGamma((int)val[0], &(val[1]));
+          
       }
       break;
-
-
     default:
       Serial << F("Unknown command: ") << command << F("\n");
-
     } // end switch
   } // end while
 }
@@ -376,7 +366,7 @@ void setup(){
   Serial << F("*********************************************************\n");
   Serial << F("* ledFlicker firmware version ") << VERSION << F("\n");
   Serial << F("* Copyright 2010 Bob Dougherty <bobd@stanford.edu>\n");
-  Serial << F("* For more info, see http://vistalab.stanford.edu/\n");
+  Serial << F("* http://vistalab.stanford.edu/newlm/index.php/LedFlicker\n");
   Serial << F("*********************************************************\n\n");
   
   pinMode(DIGITAL_OUT_PIN, OUTPUT);
@@ -452,7 +442,6 @@ void loop(){
   // The most effective way of using Serial and Messenger's callback:
   while(Serial.available())  g_message.process(Serial.read());
 }
-
 
 // Copies the global inverse gamma LUT from EEPROM.
 // The inv gamma tables are arranged as a [257][6] int16 array.
