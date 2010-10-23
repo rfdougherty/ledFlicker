@@ -156,7 +156,7 @@ char EEMEM gee_deviceId[16];
 // This will use 3084 bytes (of the 4096 bytes available in the Arduino Mega EEPROM)
 unsigned int EEMEM gee_gammaMagic;
 char EEMEM gee_gammaNotes[64];
-unsigned int EEMEM gee_invGamma[257][NUM_CHANNELS];
+unsigned int EEMEM gee_invGamma[257*NUM_CHANNELS];
 // The magic word ('LF' in ASCII) must be set to indicate that valid data has 
 // been stored there. Anything else in that part of the EEPROM will trigger the 
 // firmware to reload the default gamma when booting up.
@@ -260,8 +260,9 @@ void messageReady() {
       
     case 'e': // Set envelope params
       while(g_message.available()) val[i++] = g_message.readFloat();
-      if(i<2) ERROR("ERROR: envelope setup requires 2 parameters.\n");
-      else{
+      if(i<2){
+        ERROR("ERROR: envelope setup requires 2 parameters.\n");
+      }else{
         stopISR();
         float dur = setupEnvelope(val[0], val[1]);
         commandOk();
@@ -301,11 +302,11 @@ void messageReady() {
       break;
 
     case 's': // return status
-      commandOk();
       Serial << F("Last status message: ") << g_errorMessage << F("\n");
       Serial.println(((float)g_envelopeTicsDuration-g_envelopeTics)/g_interruptFreq,3);
       Serial << F("LED temperature: ") << (float)getTemp() << F(" C");
       Serial << F(", Fan speed: ") << getFanSpeed() << F(" RPMs\n");
+      commandOk();
       break;
 
     case 'v':
@@ -339,15 +340,15 @@ void messageReady() {
       
     case 'g': 
       // Set inverse gamma LUT. We can't pass too much data at one time, so we set one slice at a time.
+      // *** WORK HERE: allow a string to be sent in to set the gamma note string.
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<1){
         dumpInvGamma();
         commandOk();
       }else if(i==1){
-      // *** WORK HERE: allow a string to be sent in to set the gamma note string.
-        setInvGammaNotes(val);
+        dumpInvGammaSlice((int)val[0]);
         commandOk();
-      }else if(i<8){
+      }else if(i!=7){
         ERROR("ERROR: g requires either 0 args (to dump current vals) or 7 values to set the inv gamma for a LUT entry!\n");
       }else if(val[0]<0 || val[0]>=257){
           ERROR("ERROR: First argument is the LUT entry number and must be >=0 and <257.\n");
@@ -357,8 +358,8 @@ void messageReady() {
       }
       break;
     default:
+      Serial << F("[") << command << F("]\n");
       ERROR("ERROR: Unknown command. ");
-      Serial << F("'") << command << F("'\n");
     } // end switch
   } // end while
 }
@@ -414,7 +415,9 @@ void setup(){
 
   g_interruptFreq = pwmFreq;
   Serial << F("Interrupt Freq: ") << g_interruptFreq << F(" Hz\n");
-    
+  
+  
+  //setInvGammaNotes("FIXME: implement gamma notes.");
   // Load inverse gamma from EEPROM into RAM
   Serial << F("Loading stored inverse gamma LUT.\n");
   const char *gammaNotes = loadInvGamma();
@@ -458,9 +461,13 @@ void loop(){
 }
 
 bool isGammaValid(){
-  unsigned int magicWord = eeprom_read_word(gee_gammaMagic);
+  unsigned int magicWord = eeprom_read_word(&gee_gammaMagic);
   if(magicWord==EEMEM_MAGIC_WORD) return(true);
   return(false);
+}
+void setGammaValid(){
+  // EEPROM has a limited # of write cycles, so we avoid unecessary writes.
+  if(!isGammaValid()) eeprom_write_word(&gee_gammaMagic, EEMEM_MAGIC_WORD);
 }
 
 const char * getGammaNotes(){
@@ -473,8 +480,8 @@ const char * getGammaNotes(){
 // The inv gamma tables are arranged as a [257][6] int16 array.
 const char * loadInvGamma(){
   if(isGammaValid()){
-    for(int i=0; i<257; i++)
-      eeprom_read_block((void*)g_invGamma[i], (const void*)gee_invGamma[i], 6*sizeof(unsigned int));
+    for(int lutIndex=0; lutIndex<257; lutIndex++)
+      eeprom_read_block((void*)&g_invGamma[lutIndex][0], (const void*)&gee_invGamma[lutIndex*6], 6*sizeof(unsigned int));
     return(getGammaNotes());
   }else{
     // gamma data are not valid- load a default LUT.
@@ -487,36 +494,45 @@ const char * loadInvGamma(){
 
 // Copies the global inverse gamma parameters from EEPROM.
 // If invGamma is not null, then the EEPROM data is updated with the new matrix before setting the globals.
-void setInvGamma(unsigned int lutIndex, float invGammaSlice[]){
-  // The inv gamma tables is arranged as a [6][257] int16 array.
+void setInvGamma(int lutIndex, float invGammaSlice[]){
+  // The inv gamma tables is arranged as a [6][257] uint16 array. 
+  // We accept data as a float array and convert to an int array.
   if(lutIndex<257){
-    if(invGammaSlice!=NULL)
-      eeprom_write_block((void*)invGammaSlice, (void*)gee_invGamma[lutIndex], 6*sizeof(unsigned int));
-    eeprom_read_block((void*)g_invGamma[lutIndex], (const void*)gee_invGamma[lutIndex], 6*sizeof(unsigned int));
-    // When the last slice is saved, set the gamma as valid
-    if(lutIndex==256){
-      // EEPROM has a limited # of write cycles, so we avoid unecessary writes.
-      if(!isGammaValid()) eeprom_write_word(gee_gammaMagic, EEMEM_MAGIC_WORD);
+    if(invGammaSlice!=NULL){
+      unsigned int slice[6];
+      for(byte i=0; i<6; i++) slice[i] = (unsigned int)round(invGammaSlice[i]);
+      eeprom_write_block((void*)slice, (void*)&gee_invGamma[lutIndex*6], 6*sizeof(unsigned int));
+      // When the last slice is saved, set the gamma as valid
+      if(lutIndex==256){
+        setGammaValid();
+      }
     }
+    eeprom_read_block((void*)&g_invGamma[lutIndex][0], (const void*)&gee_invGamma[lutIndex*6], 6*sizeof(unsigned int));
   }
 }
 
 void setInvGammaNotes(char notes[]){
   // Load a notes string into the gamma notes EEMEM.
-  unsigned int n = sizeof(notes);
+  // We want to save the null-terminator too, so we +1.
+  unsigned int n = strlen(notes)+1;
   if(n>=64)
-    eeprom_write_block((void*)notes, (void*)gee_gammaNotes, 64);
+    eeprom_write_block((void*)notes, (void*)&gee_gammaNotes, 64);
   else
-    eeprom_write_block((void*)notes, (void*)gee_gammaNotes, n);
+    eeprom_write_block((void*)notes, (void*)&gee_gammaNotes, n);
 }
 
 void dumpInvGamma(){
   for(int i=0; i<257; i++){
-    Serial << F("[g,") << (int)i << F(",") << g_invGamma[i][0] << F(",") << g_invGamma[i][1] << F(",") << g_invGamma[i][2] << F(",")
-                                           << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F(",") << g_invGamma[i][5] << F("];\n");
+    dumpInvGammaSlice(i);
   }
   Serial.println(getGammaNotes());
 }
+
+void dumpInvGammaSlice(int i){
+    Serial << F("[g,") << i << F(",") << g_invGamma[i][0] << F(",") << g_invGamma[i][1] << F(",") << g_invGamma[i][2] << F(",")
+                                      << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F(",") << g_invGamma[i][5] << F("];\n");
+}
+
 
 void setupWave(byte wvNum, float freq, float ph, float *amp){
   static unsigned int maxWaveIndex = NUM_WAVE_SAMPLES-1;
@@ -586,14 +602,14 @@ void setMean(byte chan, float val){
   if(val<0.0)      val = 0.0;
   else if(val>1.0) val = 1.0;
   // To save some ops during waveform playout, we save the means as scaled values (scale factor is 2^19).
-  g_mean[chan] = ((unsigned long int)getPwmFromLUT(chan, val))<<19;
+  g_mean[chan] = ((unsigned long int)round(val*4095))<<19;
 }
 
 void applyMeans(){
   // Set PWM output to mean level for all channels
   // The means are stored as scaled values, so we need to divide by 2^19.
   for(byte i=0; i<NUM_CHANNELS; i++)
-    setOutput(i, (unsigned int)(g_mean[i]>>19));
+    setOutput(i, getPwmFromLUT(i, (g_mean[i]>>19)));
 }
 
 float setupEnvelope(float duration, float envRiseFall){
