@@ -607,9 +607,10 @@ void setMean(byte chan, float val){
 
 void applyMeans(){
   // Set PWM output to mean level for all channels
-  // The means are stored as scaled values, so we need to divide by 2^19.
+  // The means range from 0-4095 (2^12), but are stored as scaled by 2^19, so range from 0 - 2^31. 
+  // getPwmFromLUT is expecting them to be 0 - 2^16, so we need to divide by 2^15.
   for(byte i=0; i<NUM_CHANNELS; i++)
-    setOutput(i, getPwmFromLUT(i, (g_mean[i]>>19)));
+    setOutput(i, getPwmFromLUT(i, g_mean[i]>>15));
 }
 
 float setupEnvelope(float duration, float envRiseFall){
@@ -735,31 +736,33 @@ unsigned int getPwmFromLUT(byte ch, unsigned long int rawVal){
   return(outVal);
 }
 
-unsigned int getPwmFromLUT(byte ch, float rawVal){
-  return(getPwmFromLUT(ch, (unsigned long int)round(rawVal*65536.0f)));
-}
+//unsigned int getPwmFromLUT(byte ch, float rawVal){
+//  return(getPwmFromLUT(ch, (unsigned long int)round(rawVal*65536.0f)));
+//}
 
 void validateWave(byte chan){
   unsigned int maxVal = 0;
   unsigned int minVal = 65535;
   float mnVal = 0.0;
   unsigned int val[NUM_CHANNELS];
+  byte wvNum = 0;
 
-  Serial << F("amplitude: ") << (float)g_amplitude[0][chan]/2048.0f << F("\n");
-  Serial << F("mean: ") << (g_mean[chan]>>19) << F("\n");
-  Serial << F("sineInc: ") << g_sineInc[chan] << F("\n");
+  Serial << F("sineInc: ") << g_sineInc[wvNum] << F("\n");
   Serial << F("envTicsDwell: ") << g_envelopeDwell << F("\n");
   Serial << F("envTicsDuration: ") << g_envelopeTicsDuration << F("\n");
   Serial << F("envelopeStartEnd: ")<< g_envelopeStartEnd << F("\n");
   Serial << F("envelopeEndStart: ") << g_envelopeEndStart << F("\n");
-
+  
+  Serial << F("Channel ") << (int)chan << F(":\n");
+  Serial << F("      amplitude: ") << (float)g_amplitude[0][chan]/4096.0f << F("\n");
+  Serial << F("           mean: ") << (g_mean[chan]>>19) << F(" (PWM=") << getPwmFromLUT(chan,g_mean[chan]>>15) << F(")\n");
   for(unsigned int i=0; i<g_envelopeTicsDuration; i++){
     updateWave(i, getEnvelopeVal(i), val);
     if(val[chan]>maxVal) maxVal = val[chan];
     if(val[chan]<minVal) minVal = val[chan];
     mnVal += (float)val[chan]/g_envelopeTicsDuration;
   }
-  Serial << F("Channel #") << (int)chan << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
+  Serial << F(" [min,mean,max]: ") << minVal << F(",") << (int)(mnVal+0.5) << F(",") << maxVal << F("\n");
 }
 
 void dumpWave(byte chan){
