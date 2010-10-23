@@ -3,7 +3,7 @@ from scipy.optimize import leastsq
 import scipy.io
 import numpy, pylab
 
-calData = numpy.load('/home/bob/svn/vistadisp/ledFlicker/python/calData/mega1_1009171423.npz')
+calData = numpy.load('calData/mega1_1009171423.npz')
 nm = calData['nm']
 specPow = calData['specPow']
 gamma = calData['gamma']
@@ -11,6 +11,7 @@ pwmLevels = calData['pwmLevels']
 
 gammaMn = gamma.mean(2)
 gammaSd = gamma.std(2)
+col = ['m','g','r','b','c','y']
 
 # To compute total power, we need to sum across the spectra bins and multiply by
 # the bin size, in nanometers.
@@ -20,7 +21,6 @@ powMn = totalPow.mean(2)
 powSd = totalPow.std(2)
 
 pylab.ion()
-col = ['m','g','r','b','c','y']
 fig = pylab.figure(figsize=(14,6))
 gammaAx = fig.add_subplot(1,2,1,title='Gamma',xlabel='PWM value',ylabel='Luminance (cd/m^2)')
 gammaAx.grid(True)
@@ -94,61 +94,20 @@ for i in range(pInvGamma.shape[0]):
 pwm[pwm>4095.0] = 4095.0
 pwm[:,-1] = 4095.0
 for j in range(vals.shape[0]):
-    print "[g,%d,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]" % (j, pwm[0,j], pwm[1,j], pwm[2,j], pwm[3,j], pwm[4,j], pwm[5,j])
+    print "[g,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f]" % (j, pwm[0,j], pwm[1,j], pwm[2,j], pwm[3,j], pwm[4,j], pwm[5,j])
 
-
-
-# The current ledFlicker firmware wants 257 PWM values that define the inverse gamma.
-# These values specify the PWM value for each of 257 equally-spaced relative luiminance 
-# levels. I.e., the default inverse gamma is set to be a simple line. In Matlabish pseudocode:
-#    invGamma = linspace(0,4095,257);
-
-# Here, we try fitting the measurements with a spline interpolation:
-from scipy.interpolate import UnivariateSpline
-s = 0.0 # smoothness parameter
-k = 3 # spline order (cubic is the default)
-
-pylab.ion()
-fig = pylab.figure(figsize=(14,6))
-splineAx = fig.add_subplot(1,1,1,title='Inverse Gamma Fit',ylabel='PWM value',xlabel='Relative Luminance')
-splineAx.grid(True)
-pInvGammaSp = zeros((gammaMn.shape[0],5))
-for i in range(gammaMn.shape[0]):
-    x = pwmLevels
-    y = gammaMn[i,:]
-    y = y/y.max()
-    s = UnivariateSpline(x,y,k=3,s=1)
-    # evaluate interpolate for the desired reference points
-    xnew = linspace(0,4095,4096)
-    ynew = s(xnew)
-    splineAx.plot(x,y,'o',color=col[i])
-    splineAx.plot(xnew,ynew,'-',color=col[i])
-    pylab.draw()
-
-
-    x = gammaMn[i,:]
-    x = x/x.max()
-    # Force x to be montonic
-    xm = zeros(x.shape)
-    for j in range(1,x.shape[0]):
-        if(x[j] > x[j-1]):
-            xm[j] = x[j]
-        else:
-            xm[j] = x[j-1]+.001
-    # fit the interpolation function
-    s = UnivariateSpline(xm,y,k=3,s=0)
-    # evaluate interpolate for the desired reference points
-    xnew = linspace(0,1,257)
-    ynew = s(xnew)
-    splineAx.plot(x,y,'o',color=col[i])
-    splineAx.plot(xnew,ynew,'-',color=col[i])
-    pylab.draw()
-
-
-data,=pylab.plot(x,y,'bo-',label='data')
-fit,=pylab.plot(xnew,ynew,'r-',label='fit')
-pylab.legend()
-pylab.xlabel('x')
-pylab.ylabel('y')
+import serial
+device = "/dev/ttyUSB1"
+ledSer = serial.Serial(device, 57600, timeout=1)
+out = ledSer.readlines()
+for l in out: print(l)
+# Set verbose mode
+ledSer.write('[v,10]\n')
+ledSer.flushInput()
+for j in range(vals.shape[0]):
+    cmd = "[g,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f]\n" % (j, pwm[0,j], pwm[1,j], pwm[2,j], pwm[3,j], pwm[4,j], pwm[5,j])
+    ledSer.write(cmd)
+    print ledSer.readline()
+    ledSer.flushInput()
 
 
