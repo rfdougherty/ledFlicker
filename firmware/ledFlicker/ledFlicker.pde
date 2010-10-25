@@ -687,15 +687,15 @@ inline void updateWave(unsigned long int curTics, unsigned int envVal, unsigned 
     sineIndex = sineIndex & (NUM_WAVE_SAMPLES - 1);
     if(g_waveType[wv]==SQUAREWAVE){
       // squarewave (thresholded sine)
-      if(g_sineWave[sineIndex]>0)      envSine =  2048L*(long int)envVal;
-      else if(g_sineWave[sineIndex]<0) envSine = -2048L*(long int)envVal;
+      if(g_sineWave[sineIndex]>0)      envSine =  1024L*(long int)envVal;
+      else if(g_sineWave[sineIndex]<0) envSine = -1024L*(long int)envVal;
       else{
         // Special case for zero alternate so that we have a symmetric duty cycle (on average)
         if(lastWaveSign==0){
-          envSine =  2048L*(long int)envVal;
+          envSine =  1024L*(long int)envVal;
           lastWaveSign = 1;
         }else{
-          envSine = -2048L*(long int)envVal;
+          envSine = -1024L*(long int)envVal;
           lastWaveSign = 0;
         }
       }
