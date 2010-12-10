@@ -230,12 +230,17 @@ void messageReady() {
       Serial << F("[d,waveNum]\n");
       Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n"); 
       Serial << F("[g,lutSlice,ch0,ch1,ch2.ch3,ch4,ch5]\n");
-      Serial << F("    Set the inverse gamma LUT values and store them in EEPROM. They will \n");
+      Serial << F("    Set the inverse gamma LUT values and store them in EEPROM. The gamma tables will \n");
       Serial << F("    be loaded automatically each time the board boots up. The computed (internal) modulation\n");
-      Serial << F("    values s are in the range (0,65536). The PWM value output for a given modulation value s is:\n");
+      Serial << F("    values (s) are in the range [0,65536]. The PWM value produced for internal modulation value s is:\n");
       Serial << F("       pwm = ((s%16)*lut[s>>4] + (16-s%16)*lut[s>>4+1]) / 16 \n");
-      Serial << F("    Call this with no args to see the LUT values currently stored in EEPROM.\n"); 
-      Serial << F("For example:\n");
+      Serial << F("    There are 6 gamma tables (one for each output channel). Each gamma maps 257 internal modulation\n");
+      Serial << F("    values ([0:256:65536]) to the 0-4095 PWM values according to the formula above, which includes\n");
+      Serial << F("    linear interpolation for values between the 257 entries in the gamma LUTs. When setting the gamma\n");
+      Serial << F("    tables, pass the 6 pwm values for one of the 257 slices through the 6 tables.\n");
+      Serial << F("    Call this with no args to see the all the LUT values currently stored in EEPROM.\n"); 
+      Serial << F("    Call this with just lutSlice to see the the LUT values for the specified slice of the gamma tables.\n");
+      Serial << F("\nFor example:\n");
       Serial << F("[e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
       break;
       
@@ -349,12 +354,12 @@ void messageReady() {
         dumpInvGammaSlice((int)val[0]);
         commandOk();
       }else if(i!=7){
-        ERROR("ERROR: g requires either 0 args (to dump current vals) or 7 values to set the inv gamma for a LUT entry!\n");
+        ERROR("ERROR: g requires either 0 or 1 args (to dump current vals), or 7 values to set the inv gamma for a LUT entry!\n");
       }else if(val[0]<0 || val[0]>=257){
-          ERROR("ERROR: First argument is the LUT entry number and must be >=0 and <257.\n");
+        ERROR("ERROR: First argument is the LUT entry number and must be >=0 and <257.\n");
       }else{
-          setInvGamma((int)val[0], &(val[1]));
-          commandOk();
+        setInvGamma((int)val[0], &(val[1]));
+        commandOk();
       }
       break;
     default:
