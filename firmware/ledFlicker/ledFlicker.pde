@@ -41,9 +41,11 @@
  * 2010.10.13 Bob: Converted most of the waveform playout code to integer math
  * for better efficiency and added gamma correction (257 points per channel, 
  * with linear interpolation). 
+ * 2010.12.11 Bob: Added the l (lobe flag) command to allow waveforms mono-phasic 
+ * waveforms to be specified.
  */
 
-#define VERSION "0.8"
+#define VERSION "0.9"
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -145,6 +147,12 @@ static float g_sineInc[NUM_WAVES];
 static byte  g_waveType[NUM_WAVES];
 static unsigned int g_phase[NUM_WAVES];
 
+// A set of flags to allow positive or negative lobes of the waveform to be clipped.
+static byte g_lobe[NUM_CHANNELS];
+#define LOBE_BIP 0
+#define LOBE_POS 1
+#define LOBE_NEG 2
+
 //
 // Define EEPROM variables for static configuration vars
 //
@@ -211,7 +219,12 @@ void messageReady() {
       Serial << F("    Set the mean outputs (0 - ") << PWM_MAXVAL << F(") for all channels.\n");
       Serial << F("[e,duration,riseFall]\n");
       Serial << F("    Set the envelope duration and rise/fall times (in seconds, max = ") << 65535.0/g_interruptFreq << F(" secs).\n");
-      Serial << F("    Set duration=0 for no envelope and infinite duration.\n");
+      Serial << F("    Set duration=0 for no envelope and infinite duration. The envelope setting is preserved\n");
+      Serial << F("    until the firmware is rebooted.\n");
+      Serial << F("[l,l0,l1,l2,l3,l4,l5]\n");
+      Serial << F("    Set six flag (one for each channel) that determine if the waveforms are played in full\n");
+      Serial << F("    (0, the default), only the positive lobe is played (1), or only the negative lobe is played (-1).\n");
+      Serial << F("    As with the envelope, this setting is preserved until the firmware is rebooted.\n");
       Serial << F("[w,waveNum,frequency,phase,amp0,amp1,...]\n");
       Serial << F("    Set waveform parameters for the specified waveform number (up to ") << NUM_WAVES << F(").\n");
       Serial << F("    Phase is 0-1, with 0.5 = pi radians. Amplitudes are -1 to 1.\n");
@@ -275,6 +288,21 @@ void messageReady() {
           Serial << F("Envelope configured; actual duration is ") << dur << F(" seconds.\n");
       }
       break;
+
+    case 'l': // Set lobe-cutting flags
+      while(g_message.available()) val[i++] = g_message.readFloat();
+      if(i<6){
+        ERROR("ERROR: lobe setup requires 6 parameters.\n");
+      }else{
+        for(i=0; i<NUM_CHANNELS; i++){
+          if(val[i]<0)      g_lobe[i] = LOBE_NEG;
+          else if(val[i]>0) g_lobe[i] = LOBE_POS;
+          else              g_lobe[i] = LOBE_BIP;
+        }
+        commandOk();
+      }
+      break;
+
 
     case 'w': // setup waveforms
       while(g_message.available()) val[i++] = g_message.readFloat();
@@ -441,6 +469,9 @@ void setup(){
   setupEnvelope(3.0, 0.2);
   float amps[6] = {0.9,0.9,0.9,0.9,0.9,0.9};
   setupWave(0, 1.0, 0, amps);
+  // Default is bi-phaseic waveform
+  for(i=0; i<NUM_CHANNELS; i++) 
+    g_lobe[i] = LOBE_BIP;
   
   // Attach the callback function to the Messenger
   g_message.attach(messageReady);
@@ -709,7 +740,8 @@ inline void updateWave(unsigned long int curTics, unsigned int envVal, unsigned 
       envSine = (long int)envVal*g_sineWave[sineIndex];
     }
     for(ch=0; ch<NUM_CHANNELS; ch++){
-      lvals[ch] += (envSine*g_amplitude[wv][ch]);
+      if(g_lobe[ch]==LOBE_BIP || (g_lobe[ch]==LOBE_NEG && envSine<0) || (g_lobe[ch]==LOBE_POS && envSine>0))
+        lvals[ch] += (envSine*g_amplitude[wv][ch]);
     }
   }
   for(ch=0; ch<NUM_CHANNELS; ch++) {
