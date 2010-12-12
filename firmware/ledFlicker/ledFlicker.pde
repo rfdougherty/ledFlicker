@@ -222,7 +222,7 @@ void messageReady() {
       Serial << F("    Set duration=0 for no envelope and infinite duration. The envelope setting is preserved\n");
       Serial << F("    until the firmware is rebooted.\n");
       Serial << F("[l,l0,l1,l2,l3,l4,l5]\n");
-      Serial << F("    Set six flag (one for each channel) that determine if the waveforms are played in full\n");
+      Serial << F("    Set six flags (one for each channel) that determine if the waveforms are played in full\n");
       Serial << F("    (0, the default), only the positive lobe is played (1), or only the negative lobe is played (-1).\n");
       Serial << F("    As with the envelope, this setting is preserved until the firmware is rebooted.\n");
       Serial << F("[w,waveNum,frequency,phase,amp0,amp1,...]\n");
