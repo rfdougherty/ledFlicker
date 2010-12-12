@@ -470,7 +470,7 @@ void setup(){
   float amps[6] = {0.9,0.9,0.9,0.9,0.9,0.9};
   setupWave(0, 1.0, 0, amps);
   // Default is bi-phaseic waveform
-  for(i=0; i<NUM_CHANNELS; i++) 
+  for(int i=0; i<NUM_CHANNELS; i++) 
     g_lobe[i] = LOBE_BIP;
   
   // Attach the callback function to the Messenger
