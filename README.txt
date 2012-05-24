@@ -1,4 +1,4 @@
-ledFlicker is a six-channel LED oscillator for visual experiments. It has
+ledFlicker is a 12-channel LED oscillator for visual experiments. It has
 12-bits of color precision per channel and a refresh rate of about 2000 Hz. It
 is based on the Arduino Mega microcontroller board. The firmware should also
 work with any Arduino Mega clone, like the Seeeduino Mega.
@@ -54,6 +54,8 @@ much at once, since the ledFlicker serial port buffer is somewhat small (128
 characters). 
 
 Hardware:
+//MODIFY -TY
+
 LedFlicker is built around the [http://arduino.cc/en/Main/ArduinoBoardMega
 Arduino Mega] microcontroller board and the
 [http://www.luxdrive.com/luxdrive-products/buckpuck-3021-3023-led-driver/
