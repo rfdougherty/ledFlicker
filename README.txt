@@ -54,7 +54,7 @@ much at once, since the ledFlicker serial port buffer is somewhat small (128
 characters). 
 
 Hardware:
-//MODIFY -TY
+http://white.stanford.edu/teach/index.php/ChepkwonyChatterjee has a good description of the overall design.
 
 LedFlicker is built around the [http://arduino.cc/en/Main/ArduinoBoardMega
 Arduino Mega] microcontroller board and the
@@ -79,26 +79,19 @@ Blue (470nm), Cyan (505nm), Green (530nm), Amber (590nm), and Red (627nm).
 These can be driven at up to 700mA each. The typical forward voltage drop (Vf)
 for Red and Amber is 2.9V and for the other colors it is 3.15V.
 * 6 - 700mA
-[http://www.luxdrive.com/luxdrive-products/buckpuck-3021-3023-led-driver/
-BuckPucks] with external dimming. 
-* 6 - 2N3906 PNP transistors
-* 6 - 25-turn 5 KOhm trim pots (connected between the CTRL and REF BuckPuck
-pins for current adjustment)
-* A few resistors & capacitors
-* Perfboard for mounting things
+* N channel MOSFETs like the 50N06L or similar.
+* npn BJTs like the 2N3904 or similar
+* 2 Ohm 1-2 Watt power resistors 
+* 1.82 kOhm Resistors
+* Power supply adapter specifications were Input: 100-240V 1A 50-60Hz, Output: 5V, 4A DC. The connector should be a standard 2.5mm(ID)-5.5mm(OD) connector
+Barrel connectors (for the intermediate and final designs)
+[edit] Circuit
 * Fiber optics and a coupling lens from
 [http://www.carclo-optics.com/opticselect/intranet/optics/details/index.php?id_optics=42
 Carclo Optics] (e.g.,
 [http://www.luxeonstar.com/Carclo-Fiber-Coupling-20mm-Lens-p/10356.htm this
 one])
-* You'll also need a heatsink to keep the LEDs cool. We used the Thermaltake
-TR2-R1, a socket AM2/939/754 CPU heatsink ($15 at Fry's). This one is nice
-because it's all aluminum, has a large flat area for mounting the LEDs, has a
-relatively quiet fan, and there is a flat bracket on the fan that allows you to
-position it upside-down without interfering with the fan. To mount the LEDs, we
-drilled 3/32 inch holes and cut threads with a 4-40 plug tap. The LEDs were
-then secured with 1/4 inch 4-40 pan-head stainless steel screws, with nylon
-washers for electrical insulation.
+* You'll also need a heatsink to keep the LEDs cool.  //TY- Put link to picture and specs
 
 Suppliers:
 
@@ -107,6 +100,8 @@ Suppliers:
 * [http://www.luxeonstar.com/ Luxeon Star]
 * [http://thefiberopticstore.com/Specs-Photos.htm The Fiber Optics Store]
 * [http://www.digikey.com DigiKey]
+
+//TY- NEED TO EDIT THIS PART
 
 Power Requirements:
 We use six LEDs, each drawing up to 700mA, for a total current of 6*.7 = 4.2A.
