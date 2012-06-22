@@ -2,7 +2,7 @@
  * ledFlicker sketch for Arduino.
  * 
  * 
- * Six-channel, 12-bit, 2 kHz LED oscillator for visual experiments. 
+ * Twelve-channel, 12-bit, 2 kHz LED oscillator for visual experiments. 
  * 
  *
  * Copyright 2010 Bob Dougherty.
@@ -18,6 +18,8 @@
  *
  * You might have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Contributions by Tirthankar Chatterjee (Ty): tirth@stanford.edu 
  *
  * TO DO:
  *   - Store calibration emission spectra in EEPROM and allow the user to get 
@@ -43,6 +45,12 @@
  * with linear interpolation). 
  * 2010.12.11 Bob: Added the l (lobe flag) command to allow waveforms mono-phasic 
  * waveforms to be specified.
+ * 2012.03 Ty: Changed the number of channels from 6 to 
+ * NUM_CHANNELS currently set to 7.
+ * 2012.05 Ty: Changed the number of points per channel to 129 instead of 257 so that
+ * all the inverse gamma data from an increased number of channels can fit in RAM.
+ * 2012.05 Ty: Changed the number of channels from 6 to 
+ * NUM_CHANNELS currently set to 12.
  */
 
 #define VERSION "0.9"
@@ -57,9 +65,9 @@
 #include <Flash.h>
 #include <Messenger.h>
 
-// atmega 168  has  16k flash, 512 EEPROM, 1k RAM
-// atmega 328  has  32k flash,  1k EEPROM, 2k RAM
-// atmega 1280 has 128k flash,  4k EEPROM, 8k RAM
+// atmega 168  	has  16k flash, 512 EEPROM, 1k RAM
+// atmega 328	    	has  32k flash,  1k EEPROM, 2k RAM
+// atmega 1280/2560     has 128k flash,  4k EEPROM, 8k RAM
 // The code below is very tight on RAM because of the wave table.
 
 // Serial port baud rate. 115.2 kbs seems to work fine. That's ~12 bytes/msec, 
@@ -72,29 +80,56 @@
 #define SQUAREWAVE 0
 #define SINEWAVE 1
 
-// F_CPU and __AVR_ATmega1280__ are defined for us by the arduino environment
-// NOTE: we only support Arduino Mega!
-#define PIN_LED1 11
-#define PIN_LED2 12
-#define PIN_LED3 13
-#define PIN_LED4 2
-#define PIN_LED5 3
-#define PIN_LED6 5
+/************************************************
+ *	Arduino to ATMEGA pin mappings	    
+ *	Mappings wrt Arduino Mega 2560
+ *	    
+ *	The Digital Pins are used for PWM	
+ *
+ *	    Arduino	   | 	ATMEGA
+ *	--------------------------------
+ *	Digital Pin # 11   | 	OC1A
+ *      Digital Pin # 12   | 	OC1B
+ *      Digital Pin # 13   | 	OC1C
+ *      Digital Pin # 5	   | 	OC3A
+ *      Digital Pin # 2	   | 	OC3B
+ *      Digital Pin # 3	   | 	OC3C
+ *      Digital Pin # 6	   | 	OC4A
+ *      Digital Pin # 7	   | 	OC4B
+ *      Digital Pin # 8	   | 	OC4C
+ *      Digital Pin # 46   | 	OC5A
+ *      Digital Pin # 45   | 	OC5B
+ *      Digital Pin # 44   | 	OC5C
+ ************************************************/
+#define PIN_LED1   11 	
+#define PIN_LED2   12	
+#define PIN_LED3   13	
+#define PIN_LED4   5	
+#define PIN_LED5   2	
+#define PIN_LED6   3	
+#define PIN_LED7   6	
+#define PIN_LED8   7 	
+#define PIN_LED9   8 	
+#define PIN_LED10  46	 
+#define PIN_LED11  45	
+#define PIN_LED12  44	
+
 // These must be powers of 2! (We use bit-shifting tricks to speed some calcualtions below.)
 // See http://graphics.stanford.edu/~seander/bithacks.html#ModulusDivisionEasy
 #define WAVE_SAMP_SHIFT 10
 #define ENV_SAMP_SHIFT 7
-#define NUM_WAVE_SAMPLES (1UL << WAVE_SAMP_SHIFT)
-#define NUM_ENV_SAMPLES (1UL << ENV_SAMP_SHIFT)
+#define NUM_WAVE_SAMPLES (1UL << WAVE_SAMP_SHIFT)   	
+#define NUM_ENV_SAMPLES (1UL << ENV_SAMP_SHIFT)	
 
 #define PIN_TEMP 0     // Analog input pin for temperture sensor
 #define PIN_FAN  4     // Digital input for fan speed detector
 // NUM_CHANNELS should be 6 for now.
 // Values <6 should work, but only 2 and 6 have been tested.
-#define NUM_CHANNELS 6
+#define NUM_CHANNELS 12
 
+#define POINTS_PER_CHANNEL 129 // used to be 257
 // This pin will be used for general digital output
-#define DIGITAL_OUT_PIN 8
+#define DIGITAL_OUT_PIN 22
 
 #define NUM_WAVES 2
 
@@ -160,11 +195,23 @@ static byte g_lobe[NUM_CHANNELS];
 // the necessary defaults in the code.
 //
 char EEMEM gee_deviceId[16];
-// The invGamma LUT maps the 257 values [0:256:65536] to the 0-4095 PWM values.
-// This will use 3084 bytes (of the 4096 bytes available in the Arduino Mega EEPROM)
+
+/*************************************************************************
+ * invGamma LUT maps
+ * 128 values [0:512:65536] => 0-4095 PWM values(16 bit presicion)
+ *   
+ * Storage Requirement:
+ * 12 channels* 128 points per channel * 2 bytes per point = 3072 bytes 
+ *    
+ * Arduino Mega 2560 EEPROM is 4096 bytes. The number of values (128)
+ * is selected exactly for this reason, such that the entire LUT would
+ * fit on the EEPROM and could be loaded into RAM
+ *
+ *************************************************************************/
+
 unsigned int EEMEM gee_gammaMagic;
 char EEMEM gee_gammaNotes[64];
-unsigned int EEMEM gee_invGamma[257*NUM_CHANNELS];
+unsigned int EEMEM gee_invGamma[POINTS_PER_CHANNEL*NUM_CHANNELS]; 
 // The magic word ('LF' in ASCII) must be set to indicate that valid data has 
 // been stored there. Anything else in that part of the EEPROM will trigger the 
 // firmware to reload the default gamma when booting up.
@@ -172,7 +219,7 @@ unsigned int EEMEM gee_invGamma[257*NUM_CHANNELS];
 
 // To use the inverse gamma params, we'll need to copy them to RAM. This uses a
 // big chunk of our limited RAM.
-unsigned int g_invGamma[257][NUM_CHANNELS];
+unsigned int g_invGamma[POINTS_PER_CHANNEL][NUM_CHANNELS];
 
 // Instantiate Messenger object used for serial port communication.
 Messenger g_message = Messenger(',','[',']');
@@ -200,8 +247,8 @@ void commandOk(){
 // Create the Message callback function. This function is called whener a complete 
 // message is received on the serial port.
 void messageReady() {
-  if(g_verboseMode>1) g_message.echoBuffer();
-  float val[max(2*NUM_CHANNELS,12)];
+  if(g_verboseMode>1) g_message.echoBuffer(); 
+  float val[max(2*NUM_CHANNELS,14)]; //TODO: should 12 be 14
   int i = 0;
   if(g_message.available()) {
     // get the command byte
@@ -221,8 +268,8 @@ void messageReady() {
       Serial << F("    Set the envelope duration and rise/fall times (in seconds, max = ") << 65535.0/g_interruptFreq << F(" secs).\n");
       Serial << F("    Set duration=0 for no envelope and infinite duration. The envelope setting is preserved\n");
       Serial << F("    until the firmware is rebooted.\n");
-      Serial << F("[l,l0,l1,l2,l3,l4,l5]\n");
-      Serial << F("    Set six flags (one for each channel) that determine if the waveforms are played in full\n");
+      Serial << F("[l,l0,l1,l2,l3,l4,l5,l6,l7,l8,l9,l10,l11]\n");
+      Serial << F("    Set twelve flags (one for each channel) that determine if the waveforms are played in full\n");
       Serial << F("    (0, the default), only the positive lobe is played (1), or only the negative lobe is played (-1).\n");
       Serial << F("    As with the envelope, this setting is preserved until the firmware is rebooted.\n");
       Serial << F("[w,waveNum,frequency,phase,amp0,amp1,...]\n");
@@ -242,25 +289,26 @@ void messageReady() {
       Serial << F("    Check the currently specified waveform. Prints some internal variables and waveform stats.\n");
       Serial << F("[d,waveNum]\n");
       Serial << F("    Dump the specified wavform. (Dumps a lot of data to your serial port!\n\n"); 
-      Serial << F("[g,lutSlice,ch0,ch1,ch2.ch3,ch4,ch5]\n");
+      Serial << F("[g,lutSlice,ch0,ch1,ch2,ch3,ch4,ch5,ch6,ch7,ch8,ch9,ch10,ch11]\n");
       Serial << F("    Set the inverse gamma LUT values and store them in EEPROM. The gamma tables will \n");
       Serial << F("    be loaded automatically each time the board boots up. The computed (internal) modulation\n");
       Serial << F("    values (s) are in the range [0,65536]. The PWM value produced for internal modulation value s is:\n");
       Serial << F("       pwm = ((s%16)*lut[s>>4] + (16-s%16)*lut[s>>4+1]) / 16 \n");
-      Serial << F("    There are 6 gamma tables (one for each output channel). Each gamma maps 257 internal modulation\n");
-      Serial << F("    values ([0:256:65536]) to the 0-4095 PWM values according to the formula above, which includes\n");
-      Serial << F("    linear interpolation for values between the 257 entries in the gamma LUTs. When setting the gamma\n");
-      Serial << F("    tables, pass the 6 pwm values for one of the 257 slices through the 6 tables.\n");
+      Serial << F("    There are 12 gamma tables (one for each output channel). Each gamma maps 129 internal modulation\n");
+      Serial << F("    values ([0:512:65536]) to the 0-4095 PWM values according to the formula above, which includes\n");
+      Serial << F("    linear interpolation for values between the 129 entries in the gamma LUTs. When setting the gamma\n");
+      Serial << F("    tables, pass the 12 pwm values for one of the 129 slices through the 12 tables.\n");
       Serial << F("    Call this with no args to see the all the LUT values currently stored in EEPROM.\n"); 
       Serial << F("    Call this with just lutSlice to see the the LUT values for the specified slice of the gamma tables.\n");
       Serial << F("\nFor example:\n");
-      Serial << F("[e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9][p]\n\n");
+      Serial << F("[e,10,0.2][w,0,3,0,.3,-.3,0,0,0,.9,0,0,0,0,0,0][p]\n\n");
       break;
       
     case 'm': // Set mean outputs
+      i = 0; // Resetting the value of i, TY
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i!=1 && i!=NUM_CHANNELS){
-        ERROR("ERROR: Set outputs requires one param or 6 params.");
+        ERROR("ERROR: Set outputs requires one param or 7 params.");
       }else{
         stopISR();
         if(i==1){
@@ -277,6 +325,7 @@ void messageReady() {
       break;
       
     case 'e': // Set envelope params
+      i = 0; 
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<2){
         ERROR("ERROR: envelope setup requires 2 parameters.\n");
@@ -290,9 +339,10 @@ void messageReady() {
       break;
 
     case 'l': // Set lobe-cutting flags
+      i = 0; 
       while(g_message.available()) val[i++] = g_message.readFloat();
-      if(i<6){
-        ERROR("ERROR: lobe setup requires 6 parameters.\n");
+      if(i<NUM_CHANNELS){
+        ERROR("ERROR: lobe setup requires 7 parameters.\n");
       }else{
         for(i=0; i<NUM_CHANNELS; i++){
           if(val[i]<0)      g_lobe[i] = LOBE_NEG;
@@ -303,8 +353,8 @@ void messageReady() {
       }
       break;
 
-
     case 'w': // setup waveforms
+      i = 0; 
       while(g_message.available()) val[i++] = g_message.readFloat();
       if(i<3+NUM_CHANNELS){ // wave num, freq, phase, and amplitudes are mandatory
         ERROR("ERROR: waveform setup requires at least 3 parameters.\n");
@@ -381,10 +431,10 @@ void messageReady() {
       }else if(i==1){
         dumpInvGammaSlice((int)val[0]);
         commandOk();
-      }else if(i!=7){
+      }else if(i!=2+NUM_CHANNELS){
         ERROR("ERROR: g requires either 0 or 1 args (to dump current vals), or 7 values to set the inv gamma for a LUT entry!\n");
-      }else if(val[0]<0 || val[0]>=257){
-        ERROR("ERROR: First argument is the LUT entry number and must be >=0 and <257.\n");
+      }else if(val[0]<0 || val[0]>=POINTS_PER_CHANNEL){
+        ERROR("ERROR: First argument is the LUT entry number and must be >=0 and <129.\n");
       }else{
         setInvGamma((int)val[0], &(val[1]));
         commandOk();
@@ -417,7 +467,7 @@ void setup(){
   g_digOutBit = digitalPinToBitMask(DIGITAL_OUT_PIN);
   
   // Compute the wave and envelope LUTs. We could precompute and store them in 
-  //flash, but they only take a few 10's of ms to compute when we boot up and it
+  // flash, but they only take a few 10's of ms to compute when we boot up and it
   // simplifies the code. However, they do use much precious RAM. If the RAM 
   // limit becomes a problem, we might considerlooking into storing them in 
   // flash and using PROGMEM to force the compiler to read directly from flash.
@@ -449,8 +499,6 @@ void setup(){
   g_interruptFreq = pwmFreq;
   Serial << F("Interrupt Freq: ") << g_interruptFreq << F(" Hz\n");
   
-  
-  //setInvGammaNotes("FIXME: implement gamma notes.");
   // Load inverse gamma from EEPROM into RAM
   Serial << F("Loading stored inverse gamma LUT.\n");
   const char *gammaNotes = loadInvGamma();
@@ -461,13 +509,13 @@ void setup(){
 
   // Set waveform defaults
   Serial << F("Initializing all waveforms to zero amplitude.\n");
-  float amp[6] = {0.0,0.0,0.0,0.0,0.0,0.0};
+  float amp[NUM_CHANNELS] = {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
   for(int i=0; i<NUM_WAVES; i++) setupWave(i, 0.0, 0.0, amp);
   Serial << F("Initializing all means to ") << 0.5 << F("\n");
   setAllMeans(0.5f);
   applyMeans();
   setupEnvelope(3.0, 0.2);
-  float amps[6] = {0.9,0.9,0.9,0.9,0.9,0.9};
+  float amps[NUM_CHANNELS] = {0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9,0.9};
   setupWave(0, 1.0, 0, amps);
   // Default is bi-phaseic waveform
   for(int i=0; i<NUM_CHANNELS; i++) 
@@ -512,18 +560,26 @@ const char * getGammaNotes(){
   return(notes);
 }
 
-// Copies the global inverse gamma LUT from EEPROM.
-// The inv gamma tables are arranged as a [257][6] int16 array.
+/***************************************************************************
+ *
+ * Function to load the global inverse gamma LUT from EEPROM or in case
+ * the Gamma data is invalid, generate default values.
+ *
+ * The inv gamma tables are arranged as a 2 dimensional int16 array of
+ * total size POINTS_PER_CHANNEL (128) x  NUM_CHANNELS (12) 
+ * Now which is     
+ * 
+ *
+ ***************************************************************************/
 const char * loadInvGamma(){
   if(isGammaValid()){
-    for(int lutIndex=0; lutIndex<257; lutIndex++)
-      eeprom_read_block((void*)&g_invGamma[lutIndex][0], (const void*)&gee_invGamma[lutIndex*6], 6*sizeof(unsigned int));
+    for(int lutIndex=0; lutIndex<POINTS_PER_CHANNEL; lutIndex++)
+      eeprom_read_block((void*)&g_invGamma[lutIndex][0], (const void*)&gee_invGamma[lutIndex*NUM_CHANNELS], NUM_CHANNELS*sizeof(unsigned int));
     return(getGammaNotes());
   }else{
-    // gamma data are not valid- load a default LUT.
-    for(int i=0; i<257; i++)
-      for(byte j=0; j<6; j++)
-        g_invGamma[i][j] = (unsigned int)round(i*15.99609375); // less than 16 to get to 4095 rather than 4096.
+    for(int i=0; i<POINTS_PER_CHANNEL; i++)
+      for(byte j=0; j<NUM_CHANNELS; j++)
+        g_invGamma[i][j] = (unsigned int)round(i*31.9921875); // less than 32 to get to 4095 rather than 4096.
     return(NULL);
   }
 }
@@ -531,19 +587,19 @@ const char * loadInvGamma(){
 // Copies the global inverse gamma parameters from EEPROM.
 // If invGamma is not null, then the EEPROM data is updated with the new matrix before setting the globals.
 void setInvGamma(int lutIndex, float invGammaSlice[]){
-  // The inv gamma tables is arranged as a [6][257] uint16 array. 
+  // The inv gamma tables is arranged as a [NUM_CHANNELS][129] uint16 array. 
   // We accept data as a float array and convert to an int array.
-  if(lutIndex<257){
+  if(lutIndex<POINTS_PER_CHANNEL){
     if(invGammaSlice!=NULL){
-      unsigned int slice[6];
-      for(byte i=0; i<6; i++) slice[i] = (unsigned int)round(invGammaSlice[i]);
-      eeprom_write_block((void*)slice, (void*)&gee_invGamma[lutIndex*6], 6*sizeof(unsigned int));
+      unsigned int slice[NUM_CHANNELS];
+      for(byte i=0; i<NUM_CHANNELS; i++) slice[i] = (unsigned int)round(invGammaSlice[i]);
+      eeprom_write_block((void*)slice, (void*)&gee_invGamma[lutIndex*NUM_CHANNELS], NUM_CHANNELS*sizeof(unsigned int));
       // When the last slice is saved, set the gamma as valid
-      if(lutIndex==256){
+      if(lutIndex==POINTS_PER_CHANNEL-1){
         setGammaValid();
       }
     }
-    eeprom_read_block((void*)&g_invGamma[lutIndex][0], (const void*)&gee_invGamma[lutIndex*6], 6*sizeof(unsigned int));
+    eeprom_read_block((void*)&g_invGamma[lutIndex][0], (const void*)&gee_invGamma[lutIndex*NUM_CHANNELS], NUM_CHANNELS*sizeof(unsigned int));
   }
 }
 
@@ -558,7 +614,7 @@ void setInvGammaNotes(char notes[]){
 }
 
 void dumpInvGamma(){
-  for(int i=0; i<257; i++){
+  for(int i=0; i<POINTS_PER_CHANNEL; i++){
     dumpInvGammaSlice(i);
   }
   Serial.println(getGammaNotes());
@@ -566,7 +622,10 @@ void dumpInvGamma(){
 
 void dumpInvGammaSlice(int i){
     Serial << F("[g,") << i << F(",") << g_invGamma[i][0] << F(",") << g_invGamma[i][1] << F(",") << g_invGamma[i][2] << F(",")
-                                      << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F(",") << g_invGamma[i][5] << F("];\n");
+                                      << g_invGamma[i][3] << F(",") << g_invGamma[i][4] << F(",") << g_invGamma[i][5] << F(",") 
+				      << g_invGamma[i][6] << F(",") << g_invGamma[i][7] << F(",") << g_invGamma[i][8] << F(",") 
+				      << g_invGamma[i][9] << F(",") << g_invGamma[i][10] << F(",") << g_invGamma[i][11] << F(",")
+				      << F("];\n");
 }
 
 
@@ -625,6 +684,23 @@ void setOutput(byte chan, unsigned int val){
   case 5: 
     OCR3A = val; 
     break;
+  case 6: 
+    OCR4A = val;
+    break;
+  case 7:
+    OCR4B = val;
+    break;
+  case 8:
+    OCR4C = val;
+    break;
+  case 9:
+    OCR5A = val;
+    break;
+  case 10:
+    OCR5B = val;
+    break;
+  case 11:
+    OCR5C = val;
 #endif
   }
 }
@@ -756,12 +832,12 @@ unsigned int getPwmFromLUT(byte ch, unsigned long int rawVal){
   unsigned int outVal;
   // Treat the ends as special cases:
   if(rawVal>65535){
-    outVal = g_invGamma[256][ch];
+    outVal = g_invGamma[POINTS_PER_CHANNEL-1][ch];
   }else if(rawVal==0){
     outVal = g_invGamma[0][ch];
   }else{
-    // Get the index into the 257-entry gamma table that is at the lower bound of tmp:
-    unsigned int lowerInd = (unsigned int)(rawVal>>8);
+    // Get the index into the 129-entry gamma table that is at the lower bound of tmp:
+    unsigned int lowerInd = (unsigned int)(rawVal>>9); // Edit TY: changed 8 to 9 bit shift since we have a 7 bit Gamma (from 2^16 to 2^7)
     // This is a fast way to compute tmp % 16:
     unsigned int mod = rawVal & (unsigned int)15;
     // The following calc should just fit into an unsigned int. The highest possible value is
@@ -772,10 +848,6 @@ unsigned int getPwmFromLUT(byte ch, unsigned long int rawVal){
   }
   return(outVal);
 }
-
-//unsigned int getPwmFromLUT(byte ch, float rawVal){
-//  return(getPwmFromLUT(ch, (unsigned long int)round(rawVal*65536.0f)));
-//}
 
 void validateWave(byte chan){
   unsigned int maxVal = 0;
@@ -814,20 +886,54 @@ void dumpWave(byte chan){
 }
 
 
-// 
-// Timer 1 (and 3, if on a Mega) Configuration
-// 
-// See: http://www.uchobby.com/index.php/2007/11/24/arduino-interrupts/
-// 
-// Bit-primer:
-//   Setting a bit: byte |= 1 << bit;
-//   Clearing a bit: byte &= ~(1 << bit);
-//   Toggling a bit: byte ^= 1 << bit;
-//   Checking if a bit is set: if (byte & (1 << bit))
-//   Checking if a bit is cleared: if (~byte & (1 << bit)) OR if (!(byte & (1 << bit)))
-//
+/********************************************************************************************* 
+ * SETUP TIMERS:
+ *  
+ * Function to set up the timers 1,3,4 and 5. This is specific to Arduino Mega 2560
+ *
+ * Reference: http://www.uchobby.com/index.php/2007/11/24/arduino-interrupts/
+ * 
+ * Bit-primer:
+ *   Setting a bit: byte |= 1 << bit;
+ *   Clearing a bit: byte &= ~(1 << bit);
+ *   Toggling a bit: byte ^= 1 << bit;
+ *   Checking if a bit is set: if (byte & (1 << bit))
+ *   Checking if a bit is cleared: if (~byte & (1 << bit)) OR if (!(byte & (1 << bit)))
+ *
+ * In this program the fastPwm flag is set as FALSE, so we work with the PWM mode called
+ * "Frequency and Phase correct PWM mode".
+ *
+ * Setting up the Timers involve modifying bits in their respective Configuration Registers.
+ * Refer to the Datasheet : http://www.atmel.com/Images/doc2549.pdf
+ * 
+ * Operations that need to be done on the counters to set them up:
+ *  
+ *  1. Set the CS bits (Clock Select) to select the clock source. 
+ *	We use the default CLK with a prescaler value of 1 (No prescaling)
+ *	CSn2:0 = 001, n = 1,3,4,5 (Timer Counter number)
+ *  
+ *  2. Set the Timer Counter Mode.
+ *	This is using the WGM (Waveform Generation Mode) bits.
+ *	fastPWM mode is mode 14			    : WGMn3:0 = 1110
+ *	Frequency and Phase correct mode is mode 8  : WGMn3:0 = 1000 ,for n = 1,3,4,5 
+ *
+ *  3. Since we use TC mode 8, the counter counts from 0 to the value in the register ICRn
+ *	So we must set ICRn to the Maximum value we want to count till.
+ *
+ *  4. We must set the attribute of the pins that we use for PWM to outputs.
+ *
+ *  5. Since we are using the Output pins for a specific operation (PWM) which might not
+ *	be its default operation we must set either one or both of the Timer's
+ *	COM bits to override the normal port functionality of the pin it is connected to.
+ *	Basically we set, the COMnx1:0 = 10, so that the output pins function like we
+ *	want them to. The mapping of Arduino Pins to ATMEGA pins is defined in the 
+ *      beginning section of the code.
+ *	COMnx1:0 = 10; n = 1,3,4,5; x= A,B,C
+ *
+ *  6. When we do steps 1-5 for all the counters we are using (1,3,4,5) we have succesfully
+ *     set up the Timers.
+ ********************************************************************************************/
 float SetupTimer1(unsigned int topVal, bool fastPwm){
-  // Set pwm clock divider for timer 1 (the 16-bit timer)
   // For CS12,CS11,CS10: 001 is /1 prescaler (010 is /8 prescaler)
   TCCR1B &= ~(1 << CS12); 
   TCCR1B &= ~(1 << CS11); 
@@ -847,13 +953,7 @@ float SetupTimer1(unsigned int topVal, bool fastPwm){
     TCCR1A &=  ~(1 << WGM10);
   }
 
-  // Now load the topVal into the register. We can only do this after setting the mode:
-  //   The ICRn Register can only be written when using a Waveform Generation mode that utilizes
-  //   the ICRn Register for defining the counter’s TOP value. In these cases the Waveform Genera-
-  //   tion mode (WGMn3:0) bits must be set before the TOP value can be written to the ICRn
-  //   Register. (from the ATmega1280 data sheet)
   ICR1 = topVal;
-
   // Make sure all our pins are set for pwm
   pinMode(PIN_LED1, OUTPUT);
   pinMode(PIN_LED2, OUTPUT);
@@ -885,12 +985,63 @@ float SetupTimer1(unsigned int topVal, bool fastPwm){
   pinMode(PIN_LED4, OUTPUT);
   pinMode(PIN_LED5, OUTPUT);
   pinMode(PIN_LED6, OUTPUT);
+  
   TCCR3A |=  (1 << COM3A1); 
   TCCR3A &= ~(1 << COM3A0); 
   TCCR3A |=  (1 << COM3B1); 
   TCCR3A &= ~(1 << COM3B0);   
   TCCR3A |=  (1 << COM3C1); 
   TCCR3A &= ~(1 << COM3C0);
+  
+  TCCR4B &= ~(1 << CS42); 
+  TCCR4B &= ~(1 << CS41); 
+  TCCR4B |=  (1 << CS40);
+  if(fastPwm){
+    TCCR4B |=  (1 << WGM43);
+    TCCR4B |=  (1 << WGM42);
+    TCCR4A |=  (1 << WGM41); 
+    TCCR4A &= ~(1 << WGM40);
+  }else{
+    TCCR4B |=  (1 << WGM43);
+    TCCR4B &= ~(1 << WGM42);
+    TCCR4A &= ~(1 << WGM41); 
+    TCCR4A &= ~(1 << WGM40);
+  }
+  ICR4 = topVal;
+  pinMode(PIN_LED7, OUTPUT);
+  pinMode(PIN_LED8, OUTPUT);
+  pinMode(PIN_LED9, OUTPUT);
+  TCCR4A |=  (1 << COM4A1); 
+  TCCR4A &= ~(1 << COM4A0);
+  TCCR4A |=  (1 << COM4B1); 
+  TCCR4A &= ~(1 << COM4B0);
+  TCCR4A |=  (1 << COM4C1); 
+  TCCR4A &= ~(1 << COM4C0);
+
+  TCCR5B &= ~(1 << CS52); 
+  TCCR5B &= ~(1 << CS51); 
+  TCCR5B |=  (1 << CS50);
+  if(fastPwm){
+    TCCR5B |=  (1 << WGM53);
+    TCCR5B |=  (1 << WGM52);
+    TCCR5A |=  (1 << WGM51); 
+    TCCR5A &= ~(1 << WGM50);
+  }else{
+    TCCR5B |=  (1 << WGM53);
+    TCCR5B &= ~(1 << WGM52);
+    TCCR5A &= ~(1 << WGM51); 
+    TCCR5A &= ~(1 << WGM50);
+  }
+  ICR5 = topVal;
+  pinMode(PIN_LED10, OUTPUT);
+  pinMode(PIN_LED11, OUTPUT);
+  pinMode(PIN_LED12, OUTPUT);
+  TCCR5A |=  (1 << COM5A1); 
+  TCCR5A &= ~(1 << COM5A0);
+  TCCR5A |=  (1 << COM5B1); 
+  TCCR5A &= ~(1 << COM5B0);
+  TCCR5A |=  (1 << COM5C1); 
+  TCCR5A &= ~(1 << COM5C0);
 #endif
 
   // for fast PWM, PWM_freq = F_CPU/(N*(1+TOP))
@@ -943,6 +1094,12 @@ ISR(TIMER1_OVF_vect) {
   OCR3B = val[3]; 
   OCR3C = val[4]; 
   OCR3A = val[5];
+  OCR4A = val[6];
+  OCR4B = val[7];
+  OCR4C = val[8];
+  OCR5A = val[9];
+  OCR5B = val[10];
+  OCR5C = val[11];
   #endif
 
   g_envelopeTics++;
